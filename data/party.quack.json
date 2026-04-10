@@ -12,13 +12,22 @@
     { "name": "MoveIntent", "kind": "Enum" },
     { "name": "InCombat", "kind": "Flag" },
     { "name": "StunTicks", "kind": "Status" },
-    { "name": "CurrentTileId", "kind": "Custom" }
+    { "name": "CurrentTileId", "kind": "Custom" },
+    { "name": "Attack", "kind": "Stat" },
+    { "name": "Defense", "kind": "Stat" },
+    { "name": "Speed", "kind": "Stat" },
+    { "name": "Mana", "kind": "Stat" },
+    { "name": "MaxMana", "kind": "Stat" },
+    { "name": "PoisonTicks", "kind": "Status" },
+    { "name": "ShieldTicks", "kind": "Status" },
+    { "name": "ShieldAmount", "kind": "Stat" },
+    { "name": "TotalKills", "kind": "Stat" }
   ],
   "entities": [
-    { "id": 1, "label": "warrior", "cells": [1, 0, 0, 0, 1, 50, 50, 1, 0, 0, 0, 0] },
-    { "id": 2, "label": "mage",    "cells": [2, 1, 0, 1, 1, 30, 30, 1, 0, 0, 0, 0] },
-    { "id": 3, "label": "scout",   "cells": [3, 2, 1, 0, 1, 35, 35, 1, 0, 0, 0, 0] },
-    { "id": 4, "label": "healer",  "cells": [4, 3, 1, 1, 1, 40, 40, 1, 0, 0, 0, 0] }
+    { "id": 1, "label": "warrior", "cells": [1, 0, 0, 0, 1, 50, 50, 1, 0, 0, 0, 0, 12, 10, 5, 20, 20, 0, 0, 0, 0] },
+    { "id": 2, "label": "mage",    "cells": [2, 1, 0, 1, 1, 30, 30, 1, 0, 0, 0, 0, 8,  4,  6, 50, 50, 0, 0, 0, 0] },
+    { "id": 3, "label": "scout",   "cells": [3, 2, 1, 0, 1, 35, 35, 1, 0, 0, 0, 0, 10, 6, 12, 25, 25, 0, 0, 0, 0] },
+    { "id": 4, "label": "healer",  "cells": [4, 3, 1, 1, 1, 40, 40, 1, 0, 0, 0, 0, 6,  8,  7, 40, 40, 0, 0, 0, 0] }
   ],
   "formulas": {
     "warrior.CurrentTileId": "find_where(Map, X, Self.PosX, Y, Self.PosY)",

@@ -79,6 +79,17 @@ async fn handle_ws(mut socket: WebSocket, state: AppState) {
                                     let json = serde_json::to_string(&snapshot).unwrap_or_default();
                                     let _ = state.tick_tx.send(json);
                                 }
+                                ClientInput::CombatAction { action, target, spell } => {
+                                    let mut g = state.game.write().await;
+                                    let _events = g.process_combat_action(
+                                        &action,
+                                        &target,
+                                        spell.as_deref(),
+                                    );
+                                    let snapshot = g.snapshot();
+                                    let json = serde_json::to_string(&snapshot).unwrap_or_default();
+                                    let _ = state.tick_tx.send(json);
+                                }
                             }
                         }
                     }
@@ -95,6 +106,13 @@ async fn handle_ws(mut socket: WebSocket, state: AppState) {
 enum ClientInput {
     #[serde(rename = "move")]
     Move { direction: String },
+    #[serde(rename = "combat_action")]
+    CombatAction {
+        action: String,
+        target: String,
+        #[serde(default)]
+        spell: Option<String>,
+    },
 }
 
 async fn get_state(State(state): State<AppState>) -> impl IntoResponse {

@@ -1,0 +1,22 @@
+{
+  "version": "0.1",
+  "columns": [
+    { "name": "Class", "kind": "Enum" },
+    { "name": "ManaCost", "kind": "Stat" },
+    { "name": "Damage", "kind": "Stat" },
+    { "name": "HealAmount", "kind": "Stat" },
+    { "name": "AOE", "kind": "Flag" },
+    { "name": "EffectType", "kind": "Enum" },
+    { "name": "EffectDuration", "kind": "Stat" },
+    { "name": "EffectMagnitude", "kind": "Stat" },
+    { "name": "DamageMult", "kind": "Stat" },
+    { "name": "TargetType", "kind": "Enum" }
+  ],
+  "entities": [
+    { "id": 1, "label": "shield_bash",  "cells": [0, 3,  0, 0, 0, 3, 1, 0, 1.5, 0] },
+    { "id": 2, "label": "fireball",     "cells": [1, 15, 0, 0, 1, 0, 0, 0, 3.0, 0] },
+    { "id": 3, "label": "first_strike", "cells": [2, 5,  0, 0, 0, 0, 0, 0, 2.5, 0] },
+    { "id": 4, "label": "heal",         "cells": [3, 8,  0, 20, 0, 1, 0, 0, 0,  1] }
+  ],
+  "formulas": {}
+}

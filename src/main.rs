@@ -1,3 +1,5 @@
+mod combat;
+mod enemy_gen;
 mod game;
 mod map_gen;
 mod server;
@@ -9,6 +11,7 @@ use tokio::sync::{broadcast, RwLock};
 use quack_engine::table::{Table, TableFile};
 use quack_engine::World;
 
+use crate::enemy_gen::{build_enemies_table, great_hall_enemies};
 use crate::game::GameState;
 use crate::map_gen::generate_great_hall;
 use crate::server::{AppState, create_router};
@@ -19,45 +22,67 @@ const SIGHT_RANGE: i32 = 3;
 
 #[tokio::main]
 async fn main() {
-    eprintln!("DuckCrawl v0.1 — QuackEngine dungeon crawler");
+    eprintln!("DuckCrawl v0.2 — QuackEngine dungeon crawler");
 
     // 1. Generate Map table
     let (map_tf, _) = generate_great_hall();
     let map_table = Table::from_file(map_tf);
     eprintln!("  Map: {} tiles", map_table.rows.len());
 
-    // 2. Load Party table from data file
+    // 2. Load Party table
     let party_path = find_data_file("party.quack.json");
     let party_json = std::fs::read_to_string(&party_path)
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", party_path, e));
     let party_tf: TableFile = serde_json::from_str(&party_json)
         .unwrap_or_else(|e| panic!("Failed to parse party.quack.json: {}", e));
     let party_table = Table::from_file(party_tf);
-    eprintln!("  Party: {} members", party_table.rows.len());
+    eprintln!("  Party: {} members, {} columns", party_table.rows.len(), party_table.columns.len());
 
-    // 3. Build Visibility table programmatically
+    // 3. Build Visibility table
     let visibility_table = build_visibility_table(GRID_SIZE, "warrior", "Party", SIGHT_RANGE);
-    eprintln!("  Visibility: {} tiles, {} formulas", visibility_table.rows.len(), visibility_table.formulas.len());
+    eprintln!("  Visibility: {} tiles", visibility_table.rows.len());
 
-    // 4. Assemble World
+    // 4. Generate Enemies table
+    let enemy_spawns = great_hall_enemies();
+    let enemies_table = build_enemies_table(&enemy_spawns);
+    eprintln!("  Enemies: {} spawned", enemies_table.rows.len());
+
+    // 5. Load Spells table
+    let spells_path = find_data_file("spells.quack.json");
+    let spells_json = std::fs::read_to_string(&spells_path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", spells_path, e));
+    let spells_tf: TableFile = serde_json::from_str(&spells_json)
+        .unwrap_or_else(|e| panic!("Failed to parse spells.quack.json: {}", e));
+    let spells_table = Table::from_file(spells_tf);
+    eprintln!("  Spells: {} available", spells_table.rows.len());
+
+    // 6. Assemble World
     let mut world = World::new();
     world.add_table("Map".into(), map_table);
     world.add_table("Party".into(), party_table);
+    world.add_table("Enemies".into(), enemies_table);
+    world.add_table("Spells".into(), spells_table);
     world.add_table("Visibility".into(), visibility_table);
-    world.tick_order = vec!["Map".into(), "Party".into(), "Visibility".into()];
+    world.tick_order = vec![
+        "Map".into(),
+        "Party".into(),
+        "Enemies".into(),
+        "Spells".into(),
+        "Visibility".into(),
+    ];
 
-    // Run initial tick to evaluate formulas
+    // Initial tick
     world.tick().unwrap();
     eprintln!("  Initial tick complete (tick={})", world.tick);
 
-    // 5. Create GameState
+    // 7. Create GameState
     let game_state = GameState::new(world, GRID_SIZE);
     let shared_game = Arc::new(RwLock::new(game_state));
 
-    // 6. Create broadcast channel
+    // 8. Broadcast channel
     let (tick_tx, _) = broadcast::channel::<String>(64);
 
-    // 7. Start server
+    // 9. Start server
     let state = AppState {
         game: shared_game,
         tick_tx,
@@ -74,7 +99,6 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-/// Find the data directory, checking several locations.
 fn find_data_file(filename: &str) -> String {
     let candidates = [
         format!("data/{}", filename),
@@ -86,10 +110,9 @@ fn find_data_file(filename: &str) -> String {
             return c.clone();
         }
     }
-    candidates[0].clone() // default
+    candidates[0].clone()
 }
 
-/// Find the static directory for serving files.
 fn find_static_dir() -> String {
     let candidates = ["static", "../static"];
     for c in &candidates {

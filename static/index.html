@@ -16,95 +16,76 @@ body {
   min-height: 100vh;
   padding: 20px;
 }
-h1 {
-  font-size: 1.4rem;
-  color: #f0c040;
-  margin-bottom: 8px;
-  letter-spacing: 2px;
-}
-#status {
-  font-size: 0.8rem;
-  color: #888;
-  margin-bottom: 12px;
-}
+h1 { font-size: 1.4rem; color: #f0c040; margin-bottom: 8px; letter-spacing: 2px; }
+#status { font-size: 0.8rem; color: #888; margin-bottom: 12px; }
 #status.connected { color: #4caf50; }
 #status.error { color: #f44336; }
 
-#game-container {
-  display: flex;
-  gap: 24px;
-  align-items: flex-start;
-}
+#game-container { display: flex; gap: 24px; align-items: flex-start; }
 
-canvas {
-  border: 2px solid #333;
-  image-rendering: pixelated;
-}
+canvas { border: 2px solid #333; image-rendering: pixelated; }
 
-#info-panel {
-  min-width: 200px;
-  font-size: 0.85rem;
-  line-height: 1.6;
-}
+#info-panel { min-width: 220px; font-size: 0.85rem; line-height: 1.6; }
 #info-panel h2 {
-  color: #f0c040;
-  font-size: 1rem;
-  margin-bottom: 6px;
-  border-bottom: 1px solid #333;
-  padding-bottom: 4px;
+  color: #f0c040; font-size: 1rem; margin-bottom: 6px;
+  border-bottom: 1px solid #333; padding-bottom: 4px;
 }
 .stat { margin-bottom: 2px; }
 .stat-label { color: #888; }
 .stat-value { color: #fff; }
-.hp-bar {
-  display: inline-block;
-  width: 80px;
-  height: 10px;
-  background: #333;
-  border-radius: 2px;
-  overflow: hidden;
-  vertical-align: middle;
+.bar {
+  display: inline-block; width: 80px; height: 10px;
+  background: #333; border-radius: 2px; overflow: hidden; vertical-align: middle;
 }
-.hp-fill {
-  height: 100%;
-  background: #4caf50;
-  transition: width 0.3s;
-}
+.bar-fill { height: 100%; transition: width 0.3s; }
+.bar-hp { background: #4caf50; }
+.bar-mana { background: #4090ff; }
 
-#controls {
-  margin-top: 16px;
-  font-size: 0.75rem;
-  color: #666;
-  text-align: center;
-}
+#controls { margin-top: 16px; font-size: 0.75rem; color: #666; text-align: center; }
 kbd {
-  background: #333;
-  color: #ccc;
-  padding: 2px 6px;
-  border-radius: 3px;
-  border: 1px solid #555;
-  font-size: 0.75rem;
+  background: #333; color: #ccc; padding: 2px 6px;
+  border-radius: 3px; border: 1px solid #555; font-size: 0.75rem;
 }
 
-#minimap {
-  margin-top: 12px;
+#combat-ui {
+  margin-top: 12px; padding: 8px; border: 1px solid #f0c040;
+  border-radius: 4px; background: #1a1a2e; display: none;
 }
+#combat-ui.active { display: block; }
+#combat-ui h2 { color: #f44336; border-color: #f44336; }
+.combat-btn {
+  background: #333; color: #f0c040; border: 1px solid #555;
+  padding: 4px 12px; margin: 2px; cursor: pointer; border-radius: 3px;
+  font-family: 'Courier New', monospace; font-size: 0.8rem;
+}
+.combat-btn:hover { background: #555; }
+.combat-btn.selected { border-color: #f0c040; background: #444; }
+.combat-btn:disabled { opacity: 0.3; cursor: default; }
+.target-btn {
+  background: #2a1a1a; color: #ff6060; border: 1px solid #633;
+  padding: 3px 10px; margin: 2px; cursor: pointer; border-radius: 3px;
+  font-family: 'Courier New', monospace; font-size: 0.8rem;
+}
+.target-btn:hover { background: #4a2a2a; }
 
-#compass {
-  font-size: 1.4rem;
-  margin-bottom: 8px;
+#turn-order {
+  font-size: 0.75rem; margin-bottom: 8px; padding: 4px 0;
+  border-bottom: 1px solid #333;
 }
+.turn-marker { display: inline-block; padding: 1px 6px; margin: 1px; border-radius: 3px; }
+.turn-current { background: #f0c040; color: #000; font-weight: bold; }
+.turn-party { color: #4caf50; }
+.turn-enemy { color: #f44336; }
 
 #log {
-  margin-top: 12px;
-  max-height: 120px;
-  overflow-y: auto;
-  font-size: 0.75rem;
-  color: #999;
-  border-top: 1px solid #333;
-  padding-top: 6px;
+  margin-top: 12px; max-height: 180px; overflow-y: auto;
+  font-size: 0.75rem; color: #999; border-top: 1px solid #333; padding-top: 6px;
 }
 #log div { margin-bottom: 2px; }
+.log-damage { color: #f44336; }
+.log-heal { color: #4caf50; }
+.log-system { color: #f0c040; }
+.log-kill { color: #ff6040; font-weight: bold; }
 </style>
 </head>
 <body>
@@ -122,12 +103,20 @@ kbd {
       <kbd>D</kbd> Strafe Right &nbsp;
       <kbd>Q</kbd> Turn Left &nbsp;
       <kbd>E</kbd> Turn Right
+      <br><small style="color:#555">Combat: <kbd>1</kbd> Attack <kbd>2</kbd> Spell <kbd>3</kbd> Defend | <kbd>Tab</kbd> Target</small>
     </div>
   </div>
 
   <div id="info-panel">
     <h2>Party</h2>
     <div id="party-info"></div>
+
+    <div id="combat-ui">
+      <h2>COMBAT</h2>
+      <div id="turn-order"></div>
+      <div id="combat-actions"></div>
+      <div id="combat-targets"></div>
+    </div>
 
     <div id="minimap">
       <h2>Map</h2>
@@ -140,90 +129,184 @@ kbd {
 
 <script>
 const GRID = 6;
-const CELL = 70;  // main canvas cell size
-const MINI_CELL = 22; // minimap cell size
+const CELL = 70;
+const MINI_CELL = 22;
 const WALL_W = 3;
 
 const COLORS = {
-  floor: '#2a2a3e',
-  floorVisible: '#3a3a5e',
-  floorDiscovered: '#252535',
-  pillar: '#1a1a1a',
-  wall: '#8a7a5a',
-  wallDark: '#4a4030',
-  door: '#6a9a4a',
-  player: '#f0c040',
-  playerDir: '#ff6040',
-  mage: '#6090ff',
-  scout: '#60d060',
-  healer: '#ff80c0',
-  fog: '#0a0a15',
-  grid: '#222238',
+  floor: '#2a2a3e', floorVisible: '#3a3a5e', floorDiscovered: '#252535',
+  pillar: '#1a1a1a', wall: '#8a7a5a', wallDark: '#4a4030', door: '#6a9a4a',
+  player: '#f0c040', playerDir: '#ff6040',
+  mage: '#6090ff', scout: '#60d060', healer: '#ff80c0',
+  fog: '#0a0a15', grid: '#222238',
+  slime: '#40c040', rat: '#a0a0a0', skeleton: '#e0e0e0',
+  enemyBorder: '#ff3030',
 };
 
-const FACING_ARROWS = ['\u2191', '\u2192', '\u2193', '\u2190']; // N E S W
+const FACING_ARROWS = ['\u2191', '\u2192', '\u2193', '\u2190'];
 const FACING_NAMES = ['North', 'East', 'South', 'West'];
 const CLASS_NAMES = ['Warrior', 'Mage', 'Scout', 'Healer'];
 const CLASS_COLORS = [COLORS.player, COLORS.mage, COLORS.scout, COLORS.healer];
+const ENEMY_NAMES = ['Slime', 'Rat', 'Skeleton'];
+const ENEMY_COLORS = [COLORS.slime, COLORS.rat, COLORS.skeleton];
+const SPELL_NAMES = { 0: 'Shield Bash', 1: 'Fireball', 2: 'First Strike', 3: 'Heal' };
 
 let state = null;
 let ws = null;
+let combatAction = null;  // selected action waiting for target
+let selectedTarget = 0;   // index into alive enemies list
+let prevCombatActive = false;
 
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${proto}//${location.host}/ws`);
-
   ws.onopen = () => {
     document.getElementById('status').textContent = 'Connected';
     document.getElementById('status').className = 'connected';
   };
-
   ws.onclose = () => {
-    document.getElementById('status').textContent = 'Disconnected — reconnecting...';
+    document.getElementById('status').textContent = 'Disconnected \u2014 reconnecting...';
     document.getElementById('status').className = 'error';
     setTimeout(connect, 2000);
   };
-
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (msg.type === 'init') {
       state = msg.state;
-      log('Entered the Great Hall');
+      log('Entered the Great Hall', 'system');
     } else if (msg.type === 'tick') {
       state = msg.state;
     }
+    // Log combat events from combat log
+    if (state && state.combat && state.combat.active && state.combat.log) {
+      for (const entry of state.combat.log) {
+        if (entry.message && !entry._logged) {
+          const cls = entry.message.includes('killed') ? 'kill'
+            : entry.message.includes('heals') ? 'heal'
+            : entry.message.includes('damage') ? 'damage' : 'system';
+          log(entry.message, cls);
+          entry._logged = true;
+        }
+      }
+    }
+    // Detect combat start/end transitions
+    const combatNow = state && state.combat && state.combat.active;
+    if (combatNow && !prevCombatActive) {
+      log('Combat begins!', 'system');
+      combatAction = null;
+      selectedTarget = 0;
+    } else if (!combatNow && prevCombatActive) {
+      log('Combat ended.', 'system');
+      combatAction = null;
+    }
+    prevCombatActive = combatNow;
     render();
   };
 }
 
-function send(direction) {
+function sendMove(direction) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'move', direction }));
   }
 }
 
+function sendCombatAction(action, target, spell) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    const msg = { type: 'combat_action', action, target: target || '' };
+    if (spell) msg.spell = spell;
+    ws.send(JSON.stringify(msg));
+    combatAction = null;
+  }
+}
+
+function getAliveEnemies() {
+  if (!state || !state.tables || !state.tables.Enemies) return [];
+  return Object.entries(state.tables.Enemies)
+    .filter(([, e]) => e.Alive === 1)
+    .map(([label, e]) => ({ label, ...e }));
+}
+
+function isInCombat() {
+  return state && state.combat && state.combat.active;
+}
+
+function isPlayerTurn() {
+  if (!isInCombat()) return false;
+  const ct = state.combat.current_turn;
+  return ct === 'warrior' || ct === 'mage' || ct === 'scout' || ct === 'healer';
+}
+
 document.addEventListener('keydown', (e) => {
+  if (isInCombat() && isPlayerTurn()) {
+    const enemies = getAliveEnemies();
+    if (e.key === '1') {
+      // Attack — if only one enemy, auto-target
+      e.preventDefault();
+      if (enemies.length === 1) {
+        sendCombatAction('attack', enemies[0].label);
+      } else {
+        combatAction = 'attack';
+        selectedTarget = 0;
+        render();
+      }
+    } else if (e.key === '2') {
+      e.preventDefault();
+      // Spell — get class spell, then target
+      const warrior = getParty().warrior;
+      const spellLabel = getClassSpell(warrior ? warrior.Class : 0);
+      if (enemies.length === 1) {
+        sendCombatAction('spell', enemies[0].label, spellLabel);
+      } else {
+        combatAction = 'spell:' + spellLabel;
+        selectedTarget = 0;
+        render();
+      }
+    } else if (e.key === '3') {
+      e.preventDefault();
+      sendCombatAction('defend', '');
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      if (enemies.length > 0) {
+        selectedTarget = (selectedTarget + 1) % enemies.length;
+        render();
+      }
+    } else if (e.key === 'Enter' && combatAction) {
+      e.preventDefault();
+      if (enemies.length > 0) {
+        const target = enemies[selectedTarget].label;
+        if (combatAction.startsWith('spell:')) {
+          sendCombatAction('spell', target, combatAction.split(':')[1]);
+        } else {
+          sendCombatAction(combatAction, target);
+        }
+      }
+    }
+    return;
+  }
+
+  // Movement controls
   const map = {
     'w': 'forward', 'ArrowUp': 'forward',
     's': 'back', 'ArrowDown': 'back',
     'a': 'left', 'ArrowLeft': 'left',
     'd': 'right', 'ArrowRight': 'right',
-    'q': 'turn_left',
-    'e': 'turn_right',
+    'q': 'turn_left', 'e': 'turn_right',
   };
   const dir = map[e.key];
-  if (dir) {
-    e.preventDefault();
-    send(dir);
-  }
+  if (dir) { e.preventDefault(); sendMove(dir); }
 });
 
-function log(msg) {
+function getClassSpell(classId) {
+  return ['shield_bash', 'fireball', 'first_strike', 'heal'][classId] || 'shield_bash';
+}
+
+function log(msg, cls) {
   const el = document.getElementById('log');
   const div = document.createElement('div');
   div.textContent = `> ${msg}`;
+  if (cls) div.className = 'log-' + cls;
   el.prepend(div);
-  while (el.children.length > 20) el.removeChild(el.lastChild);
+  while (el.children.length > 30) el.removeChild(el.lastChild);
 }
 
 function render() {
@@ -231,18 +314,17 @@ function render() {
   renderDungeon();
   renderMinimap();
   renderPartyInfo();
+  renderCombatUI();
 }
 
 function getTile(x, y) {
   if (!state || !state.tables || !state.tables.Map) return null;
   return state.tables.Map[`tile_${x}_${y}`] || null;
 }
-
 function getVis(x, y) {
   if (!state || !state.tables || !state.tables.Visibility) return null;
   return state.tables.Visibility[`vis_${x}_${y}`] || null;
 }
-
 function getParty() {
   if (!state || !state.tables || !state.tables.Party) return {};
   return state.tables.Party;
@@ -252,8 +334,6 @@ function renderDungeon() {
   const canvas = document.getElementById('dungeon');
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  // Fill background (fog)
   ctx.fillStyle = COLORS.fog;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -268,34 +348,21 @@ function renderDungeon() {
       const visible = vis && vis.Visible === 1;
       const discovered = vis && vis.Discovered === 1;
 
-      if (!visible && !discovered) {
-        // Full fog
-        ctx.fillStyle = COLORS.fog;
-        ctx.fillRect(px, py, CELL, CELL);
-        continue;
-      }
+      if (!visible && !discovered) continue;
 
-      const alpha = visible ? 1.0 : 0.35;
-      ctx.globalAlpha = alpha;
+      ctx.globalAlpha = visible ? 1.0 : 0.35;
 
-      // Floor
-      if (tile.TileType === 3) {
-        ctx.fillStyle = COLORS.pillar;
-      } else if (tile.HasDoor === 1) {
-        ctx.fillStyle = COLORS.door;
-      } else {
-        ctx.fillStyle = visible ? COLORS.floorVisible : COLORS.floorDiscovered;
-      }
+      if (tile.TileType === 3) ctx.fillStyle = COLORS.pillar;
+      else if (tile.HasDoor === 1) ctx.fillStyle = COLORS.door;
+      else ctx.fillStyle = visible ? COLORS.floorVisible : COLORS.floorDiscovered;
       ctx.fillRect(px, py, CELL, CELL);
 
-      // Grid lines
       ctx.strokeStyle = COLORS.grid;
       ctx.lineWidth = 0.5;
       ctx.strokeRect(px, py, CELL, CELL);
 
-      // Walls
-      const wallColor = visible ? COLORS.wall : COLORS.wallDark;
-      ctx.fillStyle = wallColor;
+      const wc = visible ? COLORS.wall : COLORS.wallDark;
+      ctx.fillStyle = wc;
       if (tile.WallNorth === 1) ctx.fillRect(px, py, CELL, WALL_W);
       if (tile.WallSouth === 1) ctx.fillRect(px, py + CELL - WALL_W, CELL, WALL_W);
       if (tile.WallWest === 1) ctx.fillRect(px, py, WALL_W, CELL);
@@ -305,20 +372,69 @@ function renderDungeon() {
     }
   }
 
+  // Draw enemies (only on visible tiles)
+  const enemies = state.tables.Enemies || {};
+  const aliveEnemies = getAliveEnemies();
+  for (const en of aliveEnemies) {
+    const vis = getVis(en.PosX, en.PosY);
+    if (!vis || vis.Visible !== 1) continue;
+
+    const cx = en.PosX * CELL + CELL / 2;
+    const cy = en.PosY * CELL + CELL / 2;
+    const typeIdx = en.Type || 0;
+    const color = ENEMY_COLORS[typeIdx] || '#f00';
+    const r = 10;
+
+    // Enemy body
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.strokeStyle = COLORS.enemyBorder;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // HP bar above enemy
+    const barW = CELL * 0.6;
+    const barH = 4;
+    const barX = cx - barW / 2;
+    const barY = cy - r - 8;
+    const hpPct = en.MaxHP > 0 ? en.HP / en.MaxHP : 0;
+    ctx.fillStyle = '#333';
+    ctx.fillRect(barX, barY, barW, barH);
+    ctx.fillStyle = hpPct > 0.5 ? '#4caf50' : hpPct > 0.25 ? '#f0c040' : '#f44336';
+    ctx.fillRect(barX, barY, barW * hpPct, barH);
+
+    // Target highlight
+    if (combatAction && aliveEnemies[selectedTarget]?.label === en.label) {
+      ctx.strokeStyle = '#f0c040';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.arc(cx, cy, r + 4, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Type label
+    ctx.fillStyle = '#fff';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(ENEMY_NAMES[typeIdx] || '?', cx, cy + r + 12);
+  }
+
   // Draw party members
   const party = getParty();
-  const members = ['healer', 'scout', 'mage', 'warrior']; // warrior last (on top)
+  const members = ['healer', 'scout', 'mage', 'warrior'];
   for (const label of members) {
     const m = party[label];
     if (!m || m.Alive !== 1) continue;
 
     const cx = m.PosX * CELL + CELL / 2;
     const cy = m.PosY * CELL + CELL / 2;
-    const classIdx = m.Class;
-    const color = CLASS_COLORS[classIdx] || COLORS.player;
+    const color = CLASS_COLORS[m.Class] || COLORS.player;
     const r = label === 'warrior' ? 12 : 8;
 
-    // Body
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.fillStyle = color;
@@ -327,18 +443,15 @@ function renderDungeon() {
     ctx.lineWidth = 1.5;
     ctx.stroke();
 
-    // Facing indicator (small triangle)
     if (label === 'warrior') {
-      const facing = m.Facing;
-      const angles = [-Math.PI / 2, 0, Math.PI / 2, Math.PI]; // N E S W
-      const angle = angles[facing] || 0;
+      const angles = [-Math.PI / 2, 0, Math.PI / 2, Math.PI];
+      const angle = angles[m.Facing] || 0;
       const tipX = cx + Math.cos(angle) * (r + 6);
       const tipY = cy + Math.sin(angle) * (r + 6);
       const leftX = cx + Math.cos(angle - 0.5) * r;
       const leftY = cy + Math.sin(angle - 0.5) * r;
       const rightX = cx + Math.cos(angle + 0.5) * r;
       const rightY = cy + Math.sin(angle + 0.5) * r;
-
       ctx.beginPath();
       ctx.moveTo(tipX, tipY);
       ctx.lineTo(leftX, leftY);
@@ -354,7 +467,6 @@ function renderMinimap() {
   const canvas = document.getElementById('mini');
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-
   ctx.fillStyle = COLORS.fog;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -363,41 +475,39 @@ function renderMinimap() {
       const tile = getTile(x, y);
       const vis = getVis(x, y);
       if (!tile) continue;
+      const discovered = vis && vis.Discovered === 1;
+      const visible = vis && vis.Visible === 1;
+      if (!discovered) continue;
 
       const px = x * MINI_CELL;
       const py = y * MINI_CELL;
-      const discovered = vis && vis.Discovered === 1;
-      const visible = vis && vis.Visible === 1;
-
-      if (!discovered) continue;
-
-      const alpha = visible ? 1.0 : 0.4;
-      ctx.globalAlpha = alpha;
-
+      ctx.globalAlpha = visible ? 1.0 : 0.4;
       ctx.fillStyle = tile.TileType === 3 ? COLORS.pillar : COLORS.floorVisible;
       ctx.fillRect(px, py, MINI_CELL, MINI_CELL);
 
-      // Walls
       ctx.fillStyle = COLORS.wall;
       const mw = 1.5;
       if (tile.WallNorth === 1) ctx.fillRect(px, py, MINI_CELL, mw);
       if (tile.WallSouth === 1) ctx.fillRect(px, py + MINI_CELL - mw, MINI_CELL, mw);
       if (tile.WallWest === 1) ctx.fillRect(px, py, mw, MINI_CELL);
       if (tile.WallEast === 1) ctx.fillRect(px + MINI_CELL - mw, py, mw, MINI_CELL);
-
       ctx.globalAlpha = 1.0;
     }
   }
 
-  // Player dot
+  // Player + enemy dots
   const warrior = getParty().warrior;
   if (warrior) {
     const cx = warrior.PosX * MINI_CELL + MINI_CELL / 2;
     const cy = warrior.PosY * MINI_CELL + MINI_CELL / 2;
-    ctx.beginPath();
-    ctx.arc(cx, cy, 3, 0, Math.PI * 2);
-    ctx.fillStyle = COLORS.player;
-    ctx.fill();
+    ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+    ctx.fillStyle = COLORS.player; ctx.fill();
+  }
+  for (const en of getAliveEnemies()) {
+    const cx = en.PosX * MINI_CELL + MINI_CELL / 2;
+    const cy = en.PosY * MINI_CELL + MINI_CELL / 2;
+    ctx.beginPath(); ctx.arc(cx, cy, 2, 0, Math.PI * 2);
+    ctx.fillStyle = '#f44336'; ctx.fill();
   }
 }
 
@@ -406,33 +516,129 @@ function renderPartyInfo() {
   const el = document.getElementById('party-info');
   let html = '';
 
-  const order = ['warrior', 'mage', 'scout', 'healer'];
-  for (const label of order) {
+  for (const label of ['warrior', 'mage', 'scout', 'healer']) {
     const m = party[label];
     if (!m) continue;
 
-    const classIdx = m.Class;
-    const className = CLASS_NAMES[classIdx] || 'Unknown';
-    const color = CLASS_COLORS[classIdx] || '#fff';
+    const className = CLASS_NAMES[m.Class] || 'Unknown';
+    const color = CLASS_COLORS[m.Class] || '#fff';
     const hpPct = m.MaxHP > 0 ? (m.HP / m.MaxHP * 100) : 0;
-    const facing = FACING_NAMES[m.Facing] || '?';
-    const arrow = FACING_ARROWS[m.Facing] || '?';
     const active = label === 'warrior' ? ' *' : '';
 
     html += `<div style="margin-bottom:8px; ${m.Alive !== 1 ? 'opacity:0.3' : ''}">`;
     html += `<div><span style="color:${color}">${className}</span>${active}</div>`;
     html += `<div class="stat"><span class="stat-label">HP </span>`;
-    html += `<span class="hp-bar"><span class="hp-fill" style="width:${hpPct}%"></span></span>`;
-    html += ` <span class="stat-value">${m.HP}/${m.MaxHP}</span></div>`;
+    html += `<span class="bar"><span class="bar-fill bar-hp" style="width:${hpPct}%"></span></span>`;
+    html += ` <span class="stat-value">${Math.round(m.HP)}/${m.MaxHP}</span></div>`;
+
+    if (m.MaxMana > 0) {
+      const manaPct = m.MaxMana > 0 ? (m.Mana / m.MaxMana * 100) : 0;
+      html += `<div class="stat"><span class="stat-label">MP </span>`;
+      html += `<span class="bar"><span class="bar-fill bar-mana" style="width:${manaPct}%"></span></span>`;
+      html += ` <span class="stat-value">${Math.round(m.Mana)}/${m.MaxMana}</span></div>`;
+    }
+
     if (label === 'warrior') {
-      html += `<div class="stat"><span class="stat-label">Pos </span><span class="stat-value">(${m.PosX}, ${m.PosY})</span></div>`;
-      html += `<div class="stat"><span class="stat-label">Facing </span><span class="stat-value">${arrow} ${facing}</span></div>`;
+      const arrow = FACING_ARROWS[m.Facing] || '?';
+      const facing = FACING_NAMES[m.Facing] || '?';
+      html += `<div class="stat"><span class="stat-label">Pos </span><span class="stat-value">(${m.PosX}, ${m.PosY}) ${arrow} ${facing}</span></div>`;
+      html += `<div class="stat"><span class="stat-label">ATK/DEF </span><span class="stat-value">${m.Attack}/${m.Defense}</span></div>`;
     }
     html += '</div>';
   }
 
   html += `<div class="stat" style="margin-top:8px"><span class="stat-label">Tick </span><span class="stat-value">${state.tick || 0}</span></div>`;
   el.innerHTML = html;
+}
+
+function renderCombatUI() {
+  const ui = document.getElementById('combat-ui');
+  const actionsEl = document.getElementById('combat-actions');
+  const targetsEl = document.getElementById('combat-targets');
+  const turnEl = document.getElementById('turn-order');
+
+  if (!isInCombat()) {
+    ui.classList.remove('active');
+    return;
+  }
+  ui.classList.add('active');
+
+  // Turn order bar
+  const combat = state.combat;
+  let turnHtml = 'Round ' + combat.round + ': ';
+  if (combat.turn_order) {
+    for (const c of combat.turn_order) {
+      const isCurrent = c.label === combat.current_turn;
+      const isEnemy = c.table === 'Enemies';
+      const cls = isCurrent ? 'turn-current' : (isEnemy ? 'turn-enemy' : 'turn-party');
+      turnHtml += `<span class="turn-marker ${cls}">${c.label}</span> `;
+    }
+  }
+  turnEl.innerHTML = turnHtml;
+
+  // Actions
+  if (isPlayerTurn()) {
+    let actHtml = '<div style="margin-bottom:6px">Your turn:</div>';
+    actHtml += `<button class="combat-btn" onclick="pickAction('attack')"><kbd>1</kbd> Attack</button>`;
+    actHtml += `<button class="combat-btn" onclick="pickSpell()"><kbd>2</kbd> Spell</button>`;
+    actHtml += `<button class="combat-btn" onclick="sendCombatAction('defend','')"><kbd>3</kbd> Defend</button>`;
+    actionsEl.innerHTML = actHtml;
+
+    // Targets
+    if (combatAction) {
+      const enemies = getAliveEnemies();
+      let tgtHtml = '<div style="margin-top:6px">Target:</div>';
+      enemies.forEach((en, i) => {
+        const sel = i === selectedTarget ? ' style="border-color:#f0c040"' : '';
+        const name = ENEMY_NAMES[en.Type] || en.label;
+        tgtHtml += `<button class="target-btn"${sel} onclick="confirmTarget(${i})">${name} (${Math.round(en.HP)}hp)</button>`;
+      });
+      tgtHtml += '<div style="margin-top:4px;font-size:0.7rem;color:#666"><kbd>Tab</kbd> cycle, <kbd>Enter</kbd> confirm</div>';
+      targetsEl.innerHTML = tgtHtml;
+    } else {
+      targetsEl.innerHTML = '';
+    }
+  } else {
+    actionsEl.innerHTML = `<div style="color:#888">Waiting... (${combat.current_turn}'s turn)</div>`;
+    targetsEl.innerHTML = '';
+  }
+}
+
+function pickAction(action) {
+  const enemies = getAliveEnemies();
+  if (enemies.length === 1) {
+    sendCombatAction(action, enemies[0].label);
+  } else if (enemies.length > 0) {
+    combatAction = action;
+    selectedTarget = 0;
+    render();
+  }
+}
+
+function pickSpell() {
+  const warrior = getParty().warrior;
+  const spellLabel = getClassSpell(warrior ? warrior.Class : 0);
+  const enemies = getAliveEnemies();
+  if (enemies.length === 1) {
+    sendCombatAction('spell', enemies[0].label, spellLabel);
+  } else if (enemies.length > 0) {
+    combatAction = 'spell:' + spellLabel;
+    selectedTarget = 0;
+    render();
+  }
+}
+
+function confirmTarget(idx) {
+  const enemies = getAliveEnemies();
+  if (idx >= 0 && idx < enemies.length) {
+    selectedTarget = idx;
+    const target = enemies[idx].label;
+    if (combatAction && combatAction.startsWith('spell:')) {
+      sendCombatAction('spell', target, combatAction.split(':')[1]);
+    } else {
+      sendCombatAction(combatAction || 'attack', target);
+    }
+  }
 }
 
 connect();

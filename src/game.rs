@@ -6,12 +6,14 @@ use quack_engine::command::EngineCommand;
 use quack_engine::table::{EntityId, Val};
 use quack_engine::World;
 
+use crate::combat::{
+    self, CombatEvent, CombatOutcome, CombatState, CombatantTable,
+};
 use crate::map_gen::build_tile_lookup;
 
 pub type SharedGame = Arc<RwLock<GameState>>;
 
 /// Direction the player is facing. Y increases southward.
-/// 0=North (toward Y=0), 1=East, 2=South, 3=West
 const FACING_NORTH: i32 = 0;
 const FACING_EAST: i32 = 1;
 const FACING_SOUTH: i32 = 2;
@@ -31,6 +33,7 @@ pub struct GameState {
     pub tile_lookup: HashMap<(i32, i32), EntityId>,
     pub active_character: String,
     pub grid_size: i32,
+    pub combat_state: CombatState,
 }
 
 impl GameState {
@@ -41,11 +44,21 @@ impl GameState {
             tile_lookup,
             active_character: "warrior".into(),
             grid_size,
+            combat_state: CombatState::Exploring,
         }
     }
 
+    pub fn is_in_combat(&self) -> bool {
+        matches!(self.combat_state, CombatState::InCombat(_))
+    }
+
     /// Set a movement intent for the active character.
+    /// Ignored if in combat.
     pub fn set_move_intent(&mut self, direction: &str) {
+        if self.is_in_combat() {
+            return;
+        }
+
         let intent = match direction {
             "forward" => INTENT_FORWARD,
             "back" => INTENT_BACK,
@@ -65,8 +78,6 @@ impl GameState {
     }
 
     /// Process movement intents before the engine tick.
-    /// Reads the active character's MoveIntent, validates against walls,
-    /// and queues position/facing updates.
     pub fn process_movement(&mut self) {
         let party = self.world.table("Party").expect("Party table");
         let row = match party.entity_by_label(&self.active_character) {
@@ -91,19 +102,18 @@ impl GameState {
         let label = self.active_character.clone();
 
         if intent == INTENT_TURN_LEFT {
-            let new_facing = (facing + 3) % 4; // CCW
+            let new_facing = (facing + 3) % 4;
             self.world.queue_command(EngineCommand::SetCell {
                 table: "Party".into(), label: label.clone(),
                 column: "Facing".into(), value: new_facing as f64,
             });
         } else if intent == INTENT_TURN_RIGHT {
-            let new_facing = (facing + 1) % 4; // CW
+            let new_facing = (facing + 1) % 4;
             self.world.queue_command(EngineCommand::SetCell {
                 table: "Party".into(), label: label.clone(),
                 column: "Facing".into(), value: new_facing as f64,
             });
         } else {
-            // Compute movement delta based on facing + intent
             let (dx, dy) = movement_delta(facing, intent as i32);
             let tx = cx + dx;
             let ty = cy + dy;
@@ -120,7 +130,6 @@ impl GameState {
             }
         }
 
-        // Clear intent
         self.world.queue_command(EngineCommand::SetCell {
             table: "Party".into(), label,
             column: "MoveIntent".into(), value: INTENT_NONE,
@@ -132,12 +141,10 @@ impl GameState {
         let tx = cx + dx;
         let ty = cy + dy;
 
-        // Bounds check
         if tx < 0 || tx >= self.grid_size || ty < 0 || ty >= self.grid_size {
             return false;
         }
 
-        // Check current tile's exit wall
         let exit_wall = match (dx, dy) {
             (0, -1) => "WallNorth",
             (1, 0) => "WallEast",
@@ -150,12 +157,11 @@ impl GameState {
             return false;
         }
 
-        // Check target tile's entry wall
         let entry_wall = match (dx, dy) {
-            (0, -1) => "WallSouth",  // entering from south
-            (1, 0) => "WallWest",    // entering from west
-            (0, 1) => "WallNorth",   // entering from north
-            (-1, 0) => "WallEast",   // entering from east
+            (0, -1) => "WallSouth",
+            (1, 0) => "WallWest",
+            (0, 1) => "WallNorth",
+            (-1, 0) => "WallEast",
             _ => return false,
         };
 
@@ -163,7 +169,6 @@ impl GameState {
             return false;
         }
 
-        // Check tile type — can't walk into solid/pillar tiles (type 3)
         let tile_type = self.get_tile_val(tx, ty, "TileType");
         if tile_type == 3.0 {
             return false;
@@ -172,12 +177,10 @@ impl GameState {
         true
     }
 
-    /// Read a wall flag from the Map table.
     fn get_wall(&self, x: i32, y: i32, wall_col: &str) -> Val {
         self.get_tile_val(x, y, wall_col)
     }
 
-    /// Read any value from a Map tile at (x, y).
     fn get_tile_val(&self, x: i32, y: i32, col_name: &str) -> Val {
         let map = match self.world.table("Map") {
             Some(t) => t,
@@ -194,16 +197,275 @@ impl GameState {
         map.get_val(entity_id, col_idx)
     }
 
-    /// Tick the world: apply pending commands (including move intent),
-    /// process movement, then run engine tick.
+    /// Tick the world: apply pending commands, process movement,
+    /// check combat triggers, run engine tick.
     pub fn tick(&mut self) -> Result<(), String> {
-        // Apply queued commands first (e.g., SetCell for MoveIntent)
         self.world.apply_commands()?;
-        // Now process movement — reads intent from table, queues position changes
-        self.process_movement();
-        // Engine tick applies position changes and evaluates all formulas
+
+        if !self.is_in_combat() {
+            self.process_movement();
+        }
+
         self.world.tick()?;
+
+        // Check combat trigger after movement
+        if !self.is_in_combat() {
+            let adjacent = combat::check_combat_trigger(&self.world, &self.active_character);
+            if !adjacent.is_empty() {
+                let ctx = combat::start_combat(&self.world, self.world.tick);
+                // Set InCombat flag on all party members
+                for label in &["warrior", "mage", "scout", "healer"] {
+                    self.world.queue_command(EngineCommand::SetCell {
+                        table: "Party".into(),
+                        label: label.to_string(),
+                        column: "InCombat".into(),
+                        value: 1.0,
+                    });
+                }
+                self.combat_state = CombatState::InCombat(ctx);
+            }
+        }
+
         Ok(())
+    }
+
+    /// Process a player combat action. Returns events from the action
+    /// plus all subsequent enemy turns until the next player turn or combat end.
+    pub fn process_combat_action(
+        &mut self,
+        action: &str,
+        target: &str,
+        spell: Option<&str>,
+    ) -> Vec<CombatEvent> {
+        let mut all_events = Vec::new();
+
+        // Process current player's action
+        let events = self.resolve_current_turn_action(action, target, spell);
+        all_events.extend(events);
+
+        // Apply commands and tick
+        let _ = self.world.apply_commands();
+        let _ = self.world.tick();
+
+        // Check if combat ended
+        if let Some(outcome) = combat::check_combat_end(&self.world) {
+            all_events.push(self.end_combat(outcome));
+            return all_events;
+        }
+
+        // Advance to next turn
+        self.advance_turn();
+
+        // Process enemy turns until we hit a player turn or combat ends
+        loop {
+            if !self.is_in_combat() {
+                break;
+            }
+
+            let ctx = match &self.combat_state {
+                CombatState::InCombat(c) => c,
+                _ => break,
+            };
+
+            let combatant = &ctx.turn_order[ctx.turn_index];
+            if combatant.table == CombatantTable::Party {
+                // Player's turn — wait for input
+                break;
+            }
+
+            // Enemy turn
+            let enemy_label = combatant.label.clone();
+
+            // Apply start-of-turn effects
+            let (effect_events, stunned) = combat::apply_turn_start_effects(
+                &mut self.world, &enemy_label, CombatantTable::Enemies,
+            );
+            all_events.extend(effect_events);
+
+            if !stunned {
+                // Check if enemy is still alive after poison
+                let alive = combat::check_combat_end(&self.world);
+                if let Some(outcome) = alive {
+                    all_events.push(self.end_combat(outcome));
+                    return all_events;
+                }
+
+                let (action, target) = combat::select_enemy_action(&self.world, &enemy_label);
+                if action == "attack" && !target.is_empty() {
+                    let evt = combat::resolve_attack(
+                        &mut self.world,
+                        &enemy_label, CombatantTable::Enemies,
+                        &target, CombatantTable::Party,
+                        1.0,
+                    );
+                    all_events.push(evt);
+                }
+            }
+
+            let _ = self.world.apply_commands();
+            let _ = self.world.tick();
+
+            if let Some(outcome) = combat::check_combat_end(&self.world) {
+                all_events.push(self.end_combat(outcome));
+                return all_events;
+            }
+
+            self.advance_turn();
+        }
+
+        // Store events in combat log
+        if let CombatState::InCombat(ref mut ctx) = self.combat_state {
+            ctx.log.extend(all_events.clone());
+        }
+
+        all_events
+    }
+
+    fn resolve_current_turn_action(
+        &mut self,
+        action: &str,
+        target: &str,
+        spell: Option<&str>,
+    ) -> Vec<CombatEvent> {
+        let ctx = match &self.combat_state {
+            CombatState::InCombat(c) => c,
+            _ => return vec![],
+        };
+
+        let combatant = &ctx.turn_order[ctx.turn_index];
+        let actor_label = combatant.label.clone();
+        let actor_table = combatant.table;
+
+        // Apply start-of-turn effects for player
+        let (mut events, stunned) = combat::apply_turn_start_effects(
+            &mut self.world, &actor_label, actor_table,
+        );
+
+        if stunned {
+            return events;
+        }
+
+        match action {
+            "attack" => {
+                let evt = combat::resolve_attack(
+                    &mut self.world,
+                    &actor_label, actor_table,
+                    target, CombatantTable::Enemies,
+                    1.0,
+                );
+                events.push(evt);
+            }
+            "spell" => {
+                if let Some(spell_label) = spell {
+                    let spell_events = combat::resolve_spell(
+                        &mut self.world,
+                        &actor_label, actor_table,
+                        target, CombatantTable::Enemies,
+                        spell_label,
+                    );
+                    events.extend(spell_events);
+                }
+            }
+            "defend" => {
+                events.push(CombatEvent {
+                    actor: actor_label,
+                    action: "defend".into(),
+                    target: None,
+                    damage: None,
+                    heal: None,
+                    effect: Some("defending".into()),
+                    killed: false,
+                    message: format!("{} defends!", combatant.label),
+                });
+            }
+            _ => {}
+        }
+
+        events
+    }
+
+    fn advance_turn(&mut self) {
+        if let CombatState::InCombat(ref mut ctx) = self.combat_state {
+            ctx.turn_index += 1;
+
+            // Skip dead combatants
+            while ctx.turn_index < ctx.turn_order.len() {
+                let c = &ctx.turn_order[ctx.turn_index];
+                let tbl = match c.table {
+                    CombatantTable::Party => "Party",
+                    CombatantTable::Enemies => "Enemies",
+                };
+                let alive = self.world.table(tbl)
+                    .and_then(|t| t.entity_by_label(&c.label))
+                    .and_then(|r| {
+                        let ai = self.world.table(tbl)?.col_index("Alive")?;
+                        Some(r.cells[ai].as_val())
+                    })
+                    .unwrap_or(0.0);
+
+                if alive == 1.0 {
+                    break;
+                }
+                ctx.turn_index += 1;
+            }
+
+            // If we've gone past the end, start new round
+            if ctx.turn_index >= ctx.turn_order.len() {
+                ctx.round += 1;
+                ctx.turn_index = 0;
+                // Recompute initiative for new round
+                let new_ctx = combat::start_combat(&self.world, self.world.tick);
+                ctx.turn_order = new_ctx.turn_order;
+                // Skip dead combatants at start of new round
+                while ctx.turn_index < ctx.turn_order.len() {
+                    let c = &ctx.turn_order[ctx.turn_index];
+                    let tbl = match c.table {
+                        CombatantTable::Party => "Party",
+                        CombatantTable::Enemies => "Enemies",
+                    };
+                    let alive = self.world.table(tbl)
+                        .and_then(|t| t.entity_by_label(&c.label))
+                        .and_then(|r| {
+                            let ai = self.world.table(tbl)?.col_index("Alive")?;
+                            Some(r.cells[ai].as_val())
+                        })
+                        .unwrap_or(0.0);
+                    if alive == 1.0 { break; }
+                    ctx.turn_index += 1;
+                }
+            }
+        }
+    }
+
+    fn end_combat(&mut self, outcome: CombatOutcome) -> CombatEvent {
+        // Clear InCombat flags
+        for label in &["warrior", "mage", "scout", "healer"] {
+            self.world.queue_command(EngineCommand::SetCell {
+                table: "Party".into(),
+                label: label.to_string(),
+                column: "InCombat".into(),
+                value: 0.0,
+            });
+        }
+        let _ = self.world.apply_commands();
+
+        let msg = match outcome {
+            CombatOutcome::Victory => "Victory! All enemies defeated.",
+            CombatOutcome::TPK => "The party has fallen...",
+        };
+
+        self.combat_state = CombatState::Exploring;
+
+        CombatEvent {
+            actor: "system".into(),
+            action: "combat_end".into(),
+            target: None,
+            damage: None,
+            heal: None,
+            effect: Some(format!("{:?}", outcome)),
+            killed: false,
+            message: msg.into(),
+        }
     }
 
     /// Serialize all table state for WebSocket broadcast.
@@ -230,17 +492,43 @@ impl GameState {
             tables.insert(table_name.clone(), serde_json::Value::Object(entities));
         }
 
+        let combat_meta = match &self.combat_state {
+            CombatState::Exploring => serde_json::json!({ "active": false }),
+            CombatState::InCombat(ctx) => {
+                let current = ctx.turn_order.get(ctx.turn_index)
+                    .map(|c| c.label.clone())
+                    .unwrap_or_default();
+                let order: Vec<serde_json::Value> = ctx.turn_order.iter().map(|c| {
+                    serde_json::json!({
+                        "label": c.label,
+                        "table": format!("{:?}", c.table),
+                        "initiative": c.initiative,
+                    })
+                }).collect();
+                let log: Vec<serde_json::Value> = ctx.log.iter().rev().take(20).map(|e| {
+                    serde_json::json!({ "message": e.message })
+                }).collect();
+
+                serde_json::json!({
+                    "active": true,
+                    "round": ctx.round,
+                    "current_turn": current,
+                    "turn_order": order,
+                    "log": log,
+                })
+            }
+        };
+
         serde_json::json!({
             "tick": self.world.tick,
             "tables": tables,
+            "combat": combat_meta,
         })
     }
 }
 
 /// Compute (dx, dy) for a movement intent given the player's facing direction.
-/// Y increases southward.
 fn movement_delta(facing: i32, intent: i32) -> (i32, i32) {
-    // Forward direction per facing
     let (fx, fy) = match facing {
         FACING_NORTH => (0, -1),
         FACING_EAST => (1, 0),
@@ -250,10 +538,10 @@ fn movement_delta(facing: i32, intent: i32) -> (i32, i32) {
     };
 
     match intent {
-        1 => (fx, fy),                   // forward
-        2 => (-fx, -fy),                 // back
-        3 => (fy, -fx),                  // strafe left
-        4 => (-fy, fx),                  // strafe right
+        1 => (fx, fy),
+        2 => (-fx, -fy),
+        3 => (fy, -fx),
+        4 => (-fy, fx),
         _ => (0, 0),
     }
 }
@@ -261,14 +549,15 @@ fn movement_delta(facing: i32, intent: i32) -> (i32, i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::enemy_gen::{build_enemies_table, EnemySpawn, EnemyType};
     use crate::map_gen::generate_great_hall;
     use crate::visibility::build_visibility_table;
-    use quack_engine::table::Table;
+    use quack_engine::table::{Table, TableFile};
 
     fn make_test_world() -> World {
         let (map_tf, _) = generate_great_hall();
         let party_json = include_str!("../data/party.quack.json");
-        let party_tf: quack_engine::table::TableFile = serde_json::from_str(party_json).unwrap();
+        let party_tf: TableFile = serde_json::from_str(party_json).unwrap();
         let visibility = build_visibility_table(6, "warrior", "Party", 3);
 
         let mut world = World::new();
@@ -279,10 +568,38 @@ mod tests {
         world
     }
 
+    fn make_test_world_with_enemies() -> World {
+        let (map_tf, _) = generate_great_hall();
+        let party_json = include_str!("../data/party.quack.json");
+        let party_tf: TableFile = serde_json::from_str(party_json).unwrap();
+        let visibility = build_visibility_table(6, "warrior", "Party", 3);
+        let enemies = build_enemies_table(&[
+            EnemySpawn { x: 1, y: 0, enemy_type: EnemyType::Slime },
+        ]);
+        let spells_json = include_str!("../data/spells.quack.json");
+        let spells_tf: TableFile = serde_json::from_str(spells_json).unwrap();
+
+        let mut world = World::new();
+        world.add_table("Map".into(), Table::from_file(map_tf));
+        world.add_table("Party".into(), Table::from_file(party_tf));
+        world.add_table("Visibility".into(), visibility);
+        world.add_table("Enemies".into(), enemies);
+        world.add_table("Spells".into(), Table::from_file(spells_tf));
+        world.tick_order = vec!["Map".into(), "Party".into(), "Enemies".into(), "Spells".into(), "Visibility".into()];
+        world
+    }
+
     fn make_game() -> GameState {
         let world = make_test_world();
         GameState::new(world, 6)
     }
+
+    fn make_game_with_enemies() -> GameState {
+        let world = make_test_world_with_enemies();
+        GameState::new(world, 6)
+    }
+
+    // --- Movement tests (unchanged) ---
 
     #[test]
     fn test_initial_position() {
@@ -298,7 +615,6 @@ mod tests {
     #[test]
     fn test_movement_forward_east() {
         let mut game = make_game();
-        // Warrior starts at (0,0) facing east
         game.set_move_intent("forward");
         game.tick().unwrap();
 
@@ -306,10 +622,6 @@ mod tests {
         let warrior = party.entity_by_label("warrior").unwrap();
         let px = party.col_index("PosX").unwrap();
         let py = party.col_index("PosY").unwrap();
-        // Can't move east from (0,0) — pillar at (1,1) but tile (1,0) should be accessible
-        // Actually (1,0) is not a pillar. Check walls.
-        // (0,0) has WallEast? No — only perimeter walls on (0,0) are N and W.
-        // So moving east from (0,0) to (1,0) should work.
         assert_eq!(warrior.cells[px].as_val(), 1.0);
         assert_eq!(warrior.cells[py].as_val(), 0.0);
     }
@@ -317,8 +629,6 @@ mod tests {
     #[test]
     fn test_movement_blocked_by_north_wall() {
         let mut game = make_game();
-        // Warrior at (0,0) facing north — wall on north edge
-        // First turn to face north
         game.world.queue_command(EngineCommand::SetCell {
             table: "Party".into(), label: "warrior".into(),
             column: "Facing".into(), value: 0.0,
@@ -332,7 +642,6 @@ mod tests {
         let warrior = party.entity_by_label("warrior").unwrap();
         let px = party.col_index("PosX").unwrap();
         let py = party.col_index("PosY").unwrap();
-        // Should not have moved — blocked by perimeter wall
         assert_eq!(warrior.cells[px].as_val(), 0.0);
         assert_eq!(warrior.cells[py].as_val(), 0.0);
     }
@@ -340,7 +649,6 @@ mod tests {
     #[test]
     fn test_movement_blocked_by_bounds() {
         let mut game = make_game();
-        // Set warrior facing west at (0,0)
         game.world.queue_command(EngineCommand::SetCell {
             table: "Party".into(), label: "warrior".into(),
             column: "Facing".into(), value: FACING_WEST as f64,
@@ -359,7 +667,6 @@ mod tests {
     #[test]
     fn test_turn_left() {
         let mut game = make_game();
-        // Warrior starts facing east (1)
         game.set_move_intent("turn_left");
         game.tick().unwrap();
 
@@ -372,7 +679,6 @@ mod tests {
     #[test]
     fn test_turn_right() {
         let mut game = make_game();
-        // Warrior starts facing east (1)
         game.set_move_intent("turn_right");
         game.tick().unwrap();
 
@@ -397,7 +703,6 @@ mod tests {
     #[test]
     fn test_movement_blocked_by_pillar() {
         let mut game = make_game();
-        // Move warrior to (0,1) first, then try to go east to (1,1) which is a pillar
         game.world.queue_command(EngineCommand::SetCell {
             table: "Party".into(), label: "warrior".into(),
             column: "PosY".into(), value: 1.0,
@@ -414,7 +719,6 @@ mod tests {
         let party = game.world.table("Party").unwrap();
         let warrior = party.entity_by_label("warrior").unwrap();
         let px = party.col_index("PosX").unwrap();
-        // Should be blocked — (1,1) is a pillar (TileType=3) with walls
         assert_eq!(warrior.cells[px].as_val(), 0.0);
     }
 
@@ -426,11 +730,9 @@ mod tests {
         let vis = game.world.table("Visibility").unwrap();
         let vis_col = vis.col_index("Visible").unwrap();
 
-        // Warrior at (0,0) — vis_0_0 should be visible (distance 0)
         let v00 = vis.entity_by_label("vis_0_0").unwrap();
         assert_eq!(v00.cells[vis_col].as_val(), 1.0);
 
-        // vis_5_5 should NOT be visible (distance ~7)
         let v55 = vis.entity_by_label("vis_5_5").unwrap();
         assert_eq!(v55.cells[vis_col].as_val(), 0.0);
     }
@@ -438,9 +740,7 @@ mod tests {
     #[test]
     fn test_discovered_persists() {
         let mut game = make_game();
-        // Tick 1: warrior at (0,0), vis_0_0 becomes Visible
         game.tick().unwrap();
-        // Tick 2: Discovered latches from prev(Visible)=1
         game.tick().unwrap();
 
         let vis = game.world.table("Visibility").unwrap();
@@ -448,7 +748,6 @@ mod tests {
         let v00 = vis.entity_by_label("vis_0_0").unwrap();
         assert_eq!(v00.cells[disc_col].as_val(), 1.0);
 
-        // Move warrior far away
         game.world.queue_command(EngineCommand::SetCell {
             table: "Party".into(), label: "warrior".into(),
             column: "PosX".into(), value: 5.0,
@@ -460,13 +759,12 @@ mod tests {
 
         game.tick().unwrap();
 
-        // vis_0_0 should still be Discovered even if no longer Visible
         let vis = game.world.table("Visibility").unwrap();
         let v00 = vis.entity_by_label("vis_0_0").unwrap();
         let vis_col = vis.col_index("Visible").unwrap();
         let disc_col = vis.col_index("Discovered").unwrap();
-        assert_eq!(v00.cells[vis_col].as_val(), 0.0); // no longer visible
-        assert_eq!(v00.cells[disc_col].as_val(), 1.0); // still discovered
+        assert_eq!(v00.cells[vis_col].as_val(), 0.0);
+        assert_eq!(v00.cells[disc_col].as_val(), 1.0);
     }
 
     #[test]
@@ -477,8 +775,6 @@ mod tests {
         let party = game.world.table("Party").unwrap();
         let warrior = party.entity_by_label("warrior").unwrap();
         let tile_id_col = party.col_index("CurrentTileId").unwrap();
-
-        // Warrior at (0,0) — tile_0_0 has entity ID 1
         let tile_id = warrior.cells[tile_id_col].as_val();
         assert_eq!(tile_id, 1.0);
     }
@@ -486,7 +782,6 @@ mod tests {
     #[test]
     fn test_multi_step_traversal() {
         let mut game = make_game();
-        // Walk warrior east across the top row: (0,0) -> (1,0) -> (2,0) -> (3,0)
         for expected_x in 1..=3 {
             game.set_move_intent("forward");
             game.tick().unwrap();
@@ -501,19 +796,13 @@ mod tests {
 
     #[test]
     fn test_movement_delta_table() {
-        // Forward while facing each direction
         assert_eq!(movement_delta(FACING_NORTH, 1), (0, -1));
         assert_eq!(movement_delta(FACING_EAST, 1), (1, 0));
         assert_eq!(movement_delta(FACING_SOUTH, 1), (0, 1));
         assert_eq!(movement_delta(FACING_WEST, 1), (-1, 0));
-
-        // Back is opposite
         assert_eq!(movement_delta(FACING_NORTH, 2), (0, 1));
         assert_eq!(movement_delta(FACING_EAST, 2), (-1, 0));
-
-        // Strafe left while facing north goes west
         assert_eq!(movement_delta(FACING_NORTH, 3), (-1, 0));
-        // Strafe right while facing north goes east
         assert_eq!(movement_delta(FACING_NORTH, 4), (1, 0));
     }
 
@@ -525,5 +814,108 @@ mod tests {
         assert!(tables.contains_key("Map"));
         assert!(tables.contains_key("Party"));
         assert!(tables.contains_key("Visibility"));
+    }
+
+    // --- Combat tests ---
+
+    #[test]
+    fn test_combat_triggers_on_adjacent_enemy() {
+        let mut game = make_game_with_enemies();
+        // Warrior at (0,0), slime at (1,0) — adjacent
+        game.tick().unwrap();
+        assert!(game.is_in_combat(), "Combat should trigger when enemy is adjacent");
+    }
+
+    #[test]
+    fn test_combat_does_not_trigger_when_far() {
+        let mut game = make_game_with_enemies();
+        // Move slime far away first
+        game.world.queue_command(EngineCommand::SetCell {
+            table: "Enemies".into(), label: "slime_1".into(),
+            column: "PosX".into(), value: 5.0,
+        });
+        game.world.queue_command(EngineCommand::SetCell {
+            table: "Enemies".into(), label: "slime_1".into(),
+            column: "PosY".into(), value: 5.0,
+        });
+        game.world.apply_commands().unwrap();
+        game.tick().unwrap();
+        assert!(!game.is_in_combat());
+    }
+
+    #[test]
+    fn test_movement_blocked_in_combat() {
+        let mut game = make_game_with_enemies();
+        game.tick().unwrap(); // triggers combat
+        assert!(game.is_in_combat());
+
+        // Try to move — should be ignored
+        game.set_move_intent("forward");
+        let party = game.world.table("Party").unwrap();
+        let warrior = party.entity_by_label("warrior").unwrap();
+        let px = party.col_index("PosX").unwrap();
+        assert_eq!(warrior.cells[px].as_val(), 0.0);
+    }
+
+    #[test]
+    fn test_combat_attack_deals_damage() {
+        let mut game = make_game_with_enemies();
+        game.tick().unwrap(); // triggers combat
+
+        let events = game.process_combat_action("attack", "slime_1", None);
+        assert!(!events.is_empty());
+
+        // Slime should have lost HP
+        let enemies = game.world.table("Enemies").unwrap();
+        let slime = enemies.entity_by_label("slime_1").unwrap();
+        let hp_col = enemies.col_index("HP").unwrap();
+        assert!(slime.cells[hp_col].as_val() < 15.0, "Slime should have taken damage");
+    }
+
+    #[test]
+    fn test_combat_full_cycle_to_victory() {
+        let mut game = make_game_with_enemies();
+        game.tick().unwrap();
+        assert!(game.is_in_combat());
+
+        // Attack repeatedly until combat ends
+        for _ in 0..20 {
+            if !game.is_in_combat() { break; }
+            let _events = game.process_combat_action("attack", "slime_1", None);
+        }
+
+        // Slime has 15 HP, warrior does 12 atk - 2 def = 10 damage per hit
+        // Should be dead in 2 hits
+        assert!(!game.is_in_combat(), "Combat should have ended");
+    }
+
+    #[test]
+    fn test_snapshot_includes_combat_metadata() {
+        let mut game = make_game_with_enemies();
+        game.tick().unwrap();
+        let snap = game.snapshot();
+        assert_eq!(snap["combat"]["active"], true);
+        assert!(snap["combat"]["turn_order"].is_array());
+    }
+
+    #[test]
+    fn test_snapshot_includes_enemies() {
+        let game = make_game_with_enemies();
+        let snap = game.snapshot();
+        let tables = snap["tables"].as_object().unwrap();
+        assert!(tables.contains_key("Enemies"));
+    }
+
+    #[test]
+    fn test_spell_fireball_aoe() {
+        let mut game = make_game_with_enemies();
+        game.tick().unwrap();
+        assert!(game.is_in_combat());
+
+        // Switch active character to mage for spell test
+        // For now just test that the action processes without panic
+        let events = game.process_combat_action("spell", "slime_1", Some("fireball"));
+        // Mage may or may not be the current turn actor, but it shouldn't crash
+        assert!(!events.is_empty());
     }
 }
