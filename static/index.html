@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Duck Crawl</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #1a1a2e;
+  color: #e0e0e0;
+  font-family: 'Courier New', monospace;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 100vh;
+  padding: 20px;
+}
+h1 {
+  font-size: 1.4rem;
+  color: #f0c040;
+  margin-bottom: 8px;
+  letter-spacing: 2px;
+}
+#status {
+  font-size: 0.8rem;
+  color: #888;
+  margin-bottom: 12px;
+}
+#status.connected { color: #4caf50; }
+#status.error { color: #f44336; }
+
+#game-container {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+canvas {
+  border: 2px solid #333;
+  image-rendering: pixelated;
+}
+
+#info-panel {
+  min-width: 200px;
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+#info-panel h2 {
+  color: #f0c040;
+  font-size: 1rem;
+  margin-bottom: 6px;
+  border-bottom: 1px solid #333;
+  padding-bottom: 4px;
+}
+.stat { margin-bottom: 2px; }
+.stat-label { color: #888; }
+.stat-value { color: #fff; }
+.hp-bar {
+  display: inline-block;
+  width: 80px;
+  height: 10px;
+  background: #333;
+  border-radius: 2px;
+  overflow: hidden;
+  vertical-align: middle;
+}
+.hp-fill {
+  height: 100%;
+  background: #4caf50;
+  transition: width 0.3s;
+}
+
+#controls {
+  margin-top: 16px;
+  font-size: 0.75rem;
+  color: #666;
+  text-align: center;
+}
+kbd {
+  background: #333;
+  color: #ccc;
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid #555;
+  font-size: 0.75rem;
+}
+
+#minimap {
+  margin-top: 12px;
+}
+
+#compass {
+  font-size: 1.4rem;
+  margin-bottom: 8px;
+}
+
+#log {
+  margin-top: 12px;
+  max-height: 120px;
+  overflow-y: auto;
+  font-size: 0.75rem;
+  color: #999;
+  border-top: 1px solid #333;
+  padding-top: 6px;
+}
+#log div { margin-bottom: 2px; }
+</style>
+</head>
+<body>
+
+<h1>DUCK CRAWL</h1>
+<div id="status">Connecting...</div>
+
+<div id="game-container">
+  <div>
+    <canvas id="dungeon" width="420" height="420"></canvas>
+    <div id="controls">
+      <kbd>W</kbd> Forward &nbsp;
+      <kbd>S</kbd> Back &nbsp;
+      <kbd>A</kbd> Strafe Left &nbsp;
+      <kbd>D</kbd> Strafe Right &nbsp;
+      <kbd>Q</kbd> Turn Left &nbsp;
+      <kbd>E</kbd> Turn Right
+    </div>
+  </div>
+
+  <div id="info-panel">
+    <h2>Party</h2>
+    <div id="party-info"></div>
+
+    <div id="minimap">
+      <h2>Map</h2>
+      <canvas id="mini" width="132" height="132"></canvas>
+    </div>
+
+    <div id="log"></div>
+  </div>
+</div>
+
+<script>
+const GRID = 6;
+const CELL = 70;  // main canvas cell size
+const MINI_CELL = 22; // minimap cell size
+const WALL_W = 3;
+
+const COLORS = {
+  floor: '#2a2a3e',
+  floorVisible: '#3a3a5e',
+  floorDiscovered: '#252535',
+  pillar: '#1a1a1a',
+  wall: '#8a7a5a',
+  wallDark: '#4a4030',
+  door: '#6a9a4a',
+  player: '#f0c040',
+  playerDir: '#ff6040',
+  mage: '#6090ff',
+  scout: '#60d060',
+  healer: '#ff80c0',
+  fog: '#0a0a15',
+  grid: '#222238',
+};
+
+const FACING_ARROWS = ['\u2191', '\u2192', '\u2193', '\u2190']; // N E S W
+const FACING_NAMES = ['North', 'East', 'South', 'West'];
+const CLASS_NAMES = ['Warrior', 'Mage', 'Scout', 'Healer'];
+const CLASS_COLORS = [COLORS.player, COLORS.mage, COLORS.scout, COLORS.healer];
+
+let state = null;
+let ws = null;
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+  ws.onopen = () => {
+    document.getElementById('status').textContent = 'Connected';
+    document.getElementById('status').className = 'connected';
+  };
+
+  ws.onclose = () => {
+    document.getElementById('status').textContent = 'Disconnected — reconnecting...';
+    document.getElementById('status').className = 'error';
+    setTimeout(connect, 2000);
+  };
+
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'init') {
+      state = msg.state;
+      log('Entered the Great Hall');
+    } else if (msg.type === 'tick') {
+      state = msg.state;
+    }
+    render();
+  };
+}
+
+function send(direction) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'move', direction }));
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  const map = {
+    'w': 'forward', 'ArrowUp': 'forward',
+    's': 'back', 'ArrowDown': 'back',
+    'a': 'left', 'ArrowLeft': 'left',
+    'd': 'right', 'ArrowRight': 'right',
+    'q': 'turn_left',
+    'e': 'turn_right',
+  };
+  const dir = map[e.key];
+  if (dir) {
+    e.preventDefault();
+    send(dir);
+  }
+});
+
+function log(msg) {
+  const el = document.getElementById('log');
+  const div = document.createElement('div');
+  div.textContent = `> ${msg}`;
+  el.prepend(div);
+  while (el.children.length > 20) el.removeChild(el.lastChild);
+}
+
+function render() {
+  if (!state) return;
+  renderDungeon();
+  renderMinimap();
+  renderPartyInfo();
+}
+
+function getTile(x, y) {
+  if (!state || !state.tables || !state.tables.Map) return null;
+  return state.tables.Map[`tile_${x}_${y}`] || null;
+}
+
+function getVis(x, y) {
+  if (!state || !state.tables || !state.tables.Visibility) return null;
+  return state.tables.Visibility[`vis_${x}_${y}`] || null;
+}
+
+function getParty() {
+  if (!state || !state.tables || !state.tables.Party) return {};
+  return state.tables.Party;
+}
+
+function renderDungeon() {
+  const canvas = document.getElementById('dungeon');
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Fill background (fog)
+  ctx.fillStyle = COLORS.fog;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  for (let y = 0; y < GRID; y++) {
+    for (let x = 0; x < GRID; x++) {
+      const tile = getTile(x, y);
+      const vis = getVis(x, y);
+      if (!tile) continue;
+
+      const px = x * CELL;
+      const py = y * CELL;
+      const visible = vis && vis.Visible === 1;
+      const discovered = vis && vis.Discovered === 1;
+
+      if (!visible && !discovered) {
+        // Full fog
+        ctx.fillStyle = COLORS.fog;
+        ctx.fillRect(px, py, CELL, CELL);
+        continue;
+      }
+
+      const alpha = visible ? 1.0 : 0.35;
+      ctx.globalAlpha = alpha;
+
+      // Floor
+      if (tile.TileType === 3) {
+        ctx.fillStyle = COLORS.pillar;
+      } else if (tile.HasDoor === 1) {
+        ctx.fillStyle = COLORS.door;
+      } else {
+        ctx.fillStyle = visible ? COLORS.floorVisible : COLORS.floorDiscovered;
+      }
+      ctx.fillRect(px, py, CELL, CELL);
+
+      // Grid lines
+      ctx.strokeStyle = COLORS.grid;
+      ctx.lineWidth = 0.5;
+      ctx.strokeRect(px, py, CELL, CELL);
+
+      // Walls
+      const wallColor = visible ? COLORS.wall : COLORS.wallDark;
+      ctx.fillStyle = wallColor;
+      if (tile.WallNorth === 1) ctx.fillRect(px, py, CELL, WALL_W);
+      if (tile.WallSouth === 1) ctx.fillRect(px, py + CELL - WALL_W, CELL, WALL_W);
+      if (tile.WallWest === 1) ctx.fillRect(px, py, WALL_W, CELL);
+      if (tile.WallEast === 1) ctx.fillRect(px + CELL - WALL_W, py, WALL_W, CELL);
+
+      ctx.globalAlpha = 1.0;
+    }
+  }
+
+  // Draw party members
+  const party = getParty();
+  const members = ['healer', 'scout', 'mage', 'warrior']; // warrior last (on top)
+  for (const label of members) {
+    const m = party[label];
+    if (!m || m.Alive !== 1) continue;
+
+    const cx = m.PosX * CELL + CELL / 2;
+    const cy = m.PosY * CELL + CELL / 2;
+    const classIdx = m.Class;
+    const color = CLASS_COLORS[classIdx] || COLORS.player;
+    const r = label === 'warrior' ? 12 : 8;
+
+    // Body
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Facing indicator (small triangle)
+    if (label === 'warrior') {
+      const facing = m.Facing;
+      const angles = [-Math.PI / 2, 0, Math.PI / 2, Math.PI]; // N E S W
+      const angle = angles[facing] || 0;
+      const tipX = cx + Math.cos(angle) * (r + 6);
+      const tipY = cy + Math.sin(angle) * (r + 6);
+      const leftX = cx + Math.cos(angle - 0.5) * r;
+      const leftY = cy + Math.sin(angle - 0.5) * r;
+      const rightX = cx + Math.cos(angle + 0.5) * r;
+      const rightY = cy + Math.sin(angle + 0.5) * r;
+
+      ctx.beginPath();
+      ctx.moveTo(tipX, tipY);
+      ctx.lineTo(leftX, leftY);
+      ctx.lineTo(rightX, rightY);
+      ctx.closePath();
+      ctx.fillStyle = COLORS.playerDir;
+      ctx.fill();
+    }
+  }
+}
+
+function renderMinimap() {
+  const canvas = document.getElementById('mini');
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = COLORS.fog;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  for (let y = 0; y < GRID; y++) {
+    for (let x = 0; x < GRID; x++) {
+      const tile = getTile(x, y);
+      const vis = getVis(x, y);
+      if (!tile) continue;
+
+      const px = x * MINI_CELL;
+      const py = y * MINI_CELL;
+      const discovered = vis && vis.Discovered === 1;
+      const visible = vis && vis.Visible === 1;
+
+      if (!discovered) continue;
+
+      const alpha = visible ? 1.0 : 0.4;
+      ctx.globalAlpha = alpha;
+
+      ctx.fillStyle = tile.TileType === 3 ? COLORS.pillar : COLORS.floorVisible;
+      ctx.fillRect(px, py, MINI_CELL, MINI_CELL);
+
+      // Walls
+      ctx.fillStyle = COLORS.wall;
+      const mw = 1.5;
+      if (tile.WallNorth === 1) ctx.fillRect(px, py, MINI_CELL, mw);
+      if (tile.WallSouth === 1) ctx.fillRect(px, py + MINI_CELL - mw, MINI_CELL, mw);
+      if (tile.WallWest === 1) ctx.fillRect(px, py, mw, MINI_CELL);
+      if (tile.WallEast === 1) ctx.fillRect(px + MINI_CELL - mw, py, mw, MINI_CELL);
+
+      ctx.globalAlpha = 1.0;
+    }
+  }
+
+  // Player dot
+  const warrior = getParty().warrior;
+  if (warrior) {
+    const cx = warrior.PosX * MINI_CELL + MINI_CELL / 2;
+    const cy = warrior.PosY * MINI_CELL + MINI_CELL / 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+    ctx.fillStyle = COLORS.player;
+    ctx.fill();
+  }
+}
+
+function renderPartyInfo() {
+  const party = getParty();
+  const el = document.getElementById('party-info');
+  let html = '';
+
+  const order = ['warrior', 'mage', 'scout', 'healer'];
+  for (const label of order) {
+    const m = party[label];
+    if (!m) continue;
+
+    const classIdx = m.Class;
+    const className = CLASS_NAMES[classIdx] || 'Unknown';
+    const color = CLASS_COLORS[classIdx] || '#fff';
+    const hpPct = m.MaxHP > 0 ? (m.HP / m.MaxHP * 100) : 0;
+    const facing = FACING_NAMES[m.Facing] || '?';
+    const arrow = FACING_ARROWS[m.Facing] || '?';
+    const active = label === 'warrior' ? ' *' : '';
+
+    html += `<div style="margin-bottom:8px; ${m.Alive !== 1 ? 'opacity:0.3' : ''}">`;
+    html += `<div><span style="color:${color}">${className}</span>${active}</div>`;
+    html += `<div class="stat"><span class="stat-label">HP </span>`;
+    html += `<span class="hp-bar"><span class="hp-fill" style="width:${hpPct}%"></span></span>`;
+    html += ` <span class="stat-value">${m.HP}/${m.MaxHP}</span></div>`;
+    if (label === 'warrior') {
+      html += `<div class="stat"><span class="stat-label">Pos </span><span class="stat-value">(${m.PosX}, ${m.PosY})</span></div>`;
+      html += `<div class="stat"><span class="stat-label">Facing </span><span class="stat-value">${arrow} ${facing}</span></div>`;
+    }
+    html += '</div>';
+  }
+
+  html += `<div class="stat" style="margin-top:8px"><span class="stat-label">Tick </span><span class="stat-value">${state.tick || 0}</span></div>`;
+  el.innerHTML = html;
+}
+
+connect();
+</script>
+</body>
+</html>
