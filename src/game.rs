@@ -208,11 +208,11 @@ impl GameState {
 
         self.world.tick()?;
 
-        // Check combat trigger after movement
+        // Check combat trigger after movement — only engage adjacent enemies
         if !self.is_in_combat() {
             let adjacent = combat::check_combat_trigger(&self.world, &self.active_character);
             if !adjacent.is_empty() {
-                let ctx = combat::start_combat(&self.world, self.world.tick);
+                let ctx = combat::start_combat(&self.world, self.world.tick, &adjacent);
                 // Set InCombat flag on all party members
                 for label in &["warrior", "mage", "scout", "healer"] {
                     self.world.queue_command(EngineCommand::SetCell {
@@ -247,8 +247,14 @@ impl GameState {
         let _ = self.world.apply_commands();
         let _ = self.world.tick();
 
+        // Get engaged enemies list for combat end checks
+        let engaged = match &self.combat_state {
+            CombatState::InCombat(c) => c.engaged_enemies.clone(),
+            _ => vec![],
+        };
+
         // Check if combat ended
-        if let Some(outcome) = combat::check_combat_end(&self.world) {
+        if let Some(outcome) = combat::check_combat_end(&self.world, &engaged) {
             all_events.push(self.end_combat(outcome));
             return all_events;
         }
@@ -284,8 +290,7 @@ impl GameState {
 
             if !stunned {
                 // Check if enemy is still alive after poison
-                let alive = combat::check_combat_end(&self.world);
-                if let Some(outcome) = alive {
+                if let Some(outcome) = combat::check_combat_end(&self.world, &engaged) {
                     all_events.push(self.end_combat(outcome));
                     return all_events;
                 }
@@ -305,7 +310,7 @@ impl GameState {
             let _ = self.world.apply_commands();
             let _ = self.world.tick();
 
-            if let Some(outcome) = combat::check_combat_end(&self.world) {
+            if let Some(outcome) = combat::check_combat_end(&self.world, &engaged) {
                 all_events.push(self.end_combat(outcome));
                 return all_events;
             }
@@ -413,8 +418,8 @@ impl GameState {
             if ctx.turn_index >= ctx.turn_order.len() {
                 ctx.round += 1;
                 ctx.turn_index = 0;
-                // Recompute initiative for new round
-                let new_ctx = combat::start_combat(&self.world, self.world.tick);
+                // Recompute initiative for new round (same engaged enemies)
+                let new_ctx = combat::start_combat(&self.world, self.world.tick, &ctx.engaged_enemies);
                 ctx.turn_order = new_ctx.turn_order;
                 // Skip dead combatants at start of new round
                 while ctx.turn_index < ctx.turn_order.len() {
@@ -904,6 +909,49 @@ mod tests {
         let snap = game.snapshot();
         let tables = snap["tables"].as_object().unwrap();
         assert!(tables.contains_key("Enemies"));
+    }
+
+    #[test]
+    fn test_combat_ends_when_engaged_enemy_dies() {
+        // Two enemies: slime at (1,0) adjacent, rat at (5,5) far away.
+        // Combat should only engage the adjacent slime. Killing it = victory.
+        let (map_tf, _) = generate_great_hall();
+        let party_json = include_str!("../data/party.quack.json");
+        let party_tf: TableFile = serde_json::from_str(party_json).unwrap();
+        let visibility = build_visibility_table(6, "warrior", "Party", 3);
+        let enemies = build_enemies_table(&[
+            EnemySpawn { x: 1, y: 0, enemy_type: EnemyType::Slime },
+            EnemySpawn { x: 5, y: 5, enemy_type: EnemyType::Rat },
+        ]);
+        let spells_json = include_str!("../data/spells.quack.json");
+        let spells_tf: TableFile = serde_json::from_str(spells_json).unwrap();
+
+        let mut world = World::new();
+        world.add_table("Map".into(), Table::from_file(map_tf));
+        world.add_table("Party".into(), Table::from_file(party_tf));
+        world.add_table("Visibility".into(), visibility);
+        world.add_table("Enemies".into(), enemies);
+        world.add_table("Spells".into(), Table::from_file(spells_tf));
+        world.tick_order = vec!["Map".into(), "Party".into(), "Enemies".into(), "Spells".into(), "Visibility".into()];
+
+        let mut game = GameState::new(world, 6);
+        game.tick().unwrap();
+        assert!(game.is_in_combat(), "Should trigger combat with adjacent slime");
+
+        // Kill the slime (12 atk - 2 def = 10 dmg, slime has 15 HP, 2 hits)
+        for _ in 0..10 {
+            if !game.is_in_combat() { break; }
+            game.process_combat_action("attack", "slime_1", None);
+        }
+
+        assert!(!game.is_in_combat(),
+            "Combat should end after killing engaged slime, even though rat is alive at (5,5)");
+
+        // Rat should still be alive
+        let enemies = game.world.table("Enemies").unwrap();
+        let rat = enemies.entity_by_label("rat_1").unwrap();
+        let alive_col = enemies.col_index("Alive").unwrap();
+        assert_eq!(rat.cells[alive_col].as_val(), 1.0, "Far-away rat should still be alive");
     }
 
     #[test]
