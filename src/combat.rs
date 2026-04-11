@@ -16,6 +16,7 @@ pub struct CombatContext {
     pub round: u32,
     pub turn_index: usize,
     pub turn_order: Vec<Combatant>,
+    pub engaged_enemies: Vec<String>,
     pub log: Vec<CombatEvent>,
     #[allow(dead_code)]
     pub waiting_for_player: bool,
@@ -95,8 +96,8 @@ pub fn check_combat_trigger(world: &World, active_char: &str) -> Vec<String> {
     adjacent
 }
 
-/// Start combat: build turn order from all alive party + all alive enemies.
-pub fn start_combat(world: &World, tick: u64) -> CombatContext {
+/// Start combat: build turn order from all alive party + only the engaged enemies.
+pub fn start_combat(world: &World, tick: u64, engaged_enemies: &[String]) -> CombatContext {
     let mut combatants = Vec::new();
 
     // Add party members
@@ -114,12 +115,13 @@ pub fn start_combat(world: &World, tick: u64) -> CombatContext {
         }
     }
 
-    // Add alive enemies
+    // Add only engaged enemies (the ones that triggered this encounter)
     if let Some(enemies) = world.table("Enemies") {
         let speed_col = enemies.col_index("Speed").unwrap();
         let alive_col = enemies.col_index("Alive").unwrap();
         for row in &enemies.rows {
             if !row.alive || row.cells[alive_col].as_val() != 1.0 { continue; }
+            if !engaged_enemies.contains(&row.label) { continue; }
             let speed = row.cells[speed_col].as_val();
             combatants.push(Combatant {
                 label: row.label.clone(),
@@ -136,6 +138,7 @@ pub fn start_combat(world: &World, tick: u64) -> CombatContext {
         round: 1,
         turn_index: 0,
         turn_order: combatants,
+        engaged_enemies: engaged_enemies.to_vec(),
         log: vec![CombatEvent {
             actor: "system".into(),
             action: "combat_start".into(),
@@ -537,16 +540,17 @@ pub fn apply_turn_start_effects(world: &mut World, label: &str, table: Combatant
     (events, stunned)
 }
 
-/// Check if combat should end.
-pub fn check_combat_end(world: &World) -> Option<CombatOutcome> {
-    let enemies_alive = count_alive(world, "Enemies");
-    if enemies_alive == 0 {
-        return Some(CombatOutcome::Victory);
-    }
-
+/// Check if combat should end. Only checks engaged enemies, not all enemies on the map.
+pub fn check_combat_end(world: &World, engaged_enemies: &[String]) -> Option<CombatOutcome> {
     let party_alive = count_alive(world, "Party");
     if party_alive == 0 {
         return Some(CombatOutcome::TPK);
+    }
+
+    // Victory when all engaged enemies are dead
+    let engaged_alive = count_alive_by_labels(world, "Enemies", engaged_enemies);
+    if engaged_alive == 0 {
+        return Some(CombatOutcome::Victory);
     }
 
     None
@@ -595,6 +599,20 @@ fn count_alive(world: &World, tbl: &str) -> usize {
         None => return 0,
     };
     table.rows.iter().filter(|r| r.alive && r.cells[alive_col].as_val() == 1.0).count()
+}
+
+fn count_alive_by_labels(world: &World, tbl: &str, labels: &[String]) -> usize {
+    let table = match world.table(tbl) {
+        Some(t) => t,
+        None => return 0,
+    };
+    let alive_col = match table.col_index("Alive") {
+        Some(i) => i,
+        None => return 0,
+    };
+    table.rows.iter()
+        .filter(|r| r.alive && r.cells[alive_col].as_val() == 1.0 && labels.contains(&r.label))
+        .count()
 }
 
 fn get_alive_labels(world: &World, tbl: &str) -> Vec<String> {
