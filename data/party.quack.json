@@ -21,18 +21,52 @@
     { "name": "PoisonTicks", "kind": "Status" },
     { "name": "ShieldTicks", "kind": "Status" },
     { "name": "ShieldAmount", "kind": "Stat" },
-    { "name": "TotalKills", "kind": "Stat" }
+    { "name": "TotalKills", "kind": "Stat" },
+    { "name": "DeltaHP", "kind": "Custom" },
+    { "name": "DeltaMana", "kind": "Custom" },
+    { "name": "PoisonIntent", "kind": "Custom" },
+    { "name": "StunIntent", "kind": "Custom" },
+    { "name": "ShieldIntent", "kind": "Custom" },
+    { "name": "PoisonDmg", "kind": "Custom" }
   ],
   "entities": [
-    { "id": 1, "label": "warrior", "cells": [1, 0, 0, 0, 1, 50, 50, 1, 0, 0, 0, 0, 12, 10, 5, 20, 20, 0, 0, 0, 0] },
-    { "id": 2, "label": "mage",    "cells": [2, 1, 0, 1, 1, 30, 30, 1, 0, 0, 0, 0, 8,  4,  6, 50, 50, 0, 0, 0, 0] },
-    { "id": 3, "label": "scout",   "cells": [3, 2, 1, 0, 1, 35, 35, 1, 0, 0, 0, 0, 10, 6, 12, 25, 25, 0, 0, 0, 0] },
-    { "id": 4, "label": "healer",  "cells": [4, 3, 1, 1, 1, 40, 40, 1, 0, 0, 0, 0, 6,  8,  7, 40, 40, 0, 0, 0, 0] }
+    { "id": 1, "label": "warrior", "cells": [1, 0, 0, 0, 1, 50, 50, 1, 0, 0, 0, 0, 12, 10, 5, 20, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
+    { "id": 2, "label": "mage",    "cells": [2, 1, 0, 1, 1, 30, 30, 1, 0, 0, 0, 0, 8,  4,  6, 50, 50, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
+    { "id": 3, "label": "scout",   "cells": [3, 2, 1, 0, 1, 35, 35, 1, 0, 0, 0, 0, 10, 6, 12, 25, 25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
+    { "id": 4, "label": "healer",  "cells": [4, 3, 1, 1, 1, 40, 40, 1, 0, 0, 0, 0, 6,  8,  7, 40, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }
   ],
   "formulas": {
     "warrior.CurrentTileId": "find_where(Map, X, Self.PosX, Y, Self.PosY)",
     "mage.CurrentTileId": "find_where(Map, X, Self.PosX, Y, Self.PosY)",
     "scout.CurrentTileId": "find_where(Map, X, Self.PosX, Y, Self.PosY)",
-    "healer.CurrentTileId": "find_where(Map, X, Self.PosX, Y, Self.PosY)"
+    "healer.CurrentTileId": "find_where(Map, X, Self.PosX, Y, Self.PosY)",
+    "warrior.HP": "clamp(prev(Self.HP) + Self.DeltaHP + Self.PoisonDmg, 0, Self.MaxHP)",
+    "mage.HP": "clamp(prev(Self.HP) + Self.DeltaHP + Self.PoisonDmg, 0, Self.MaxHP)",
+    "scout.HP": "clamp(prev(Self.HP) + Self.DeltaHP + Self.PoisonDmg, 0, Self.MaxHP)",
+    "healer.HP": "clamp(prev(Self.HP) + Self.DeltaHP + Self.PoisonDmg, 0, Self.MaxHP)",
+    "warrior.Mana": "clamp(prev(Self.Mana) + Self.DeltaMana, 0, Self.MaxMana)",
+    "mage.Mana": "clamp(prev(Self.Mana) + Self.DeltaMana, 0, Self.MaxMana)",
+    "scout.Mana": "clamp(prev(Self.Mana) + Self.DeltaMana, 0, Self.MaxMana)",
+    "healer.Mana": "clamp(prev(Self.Mana) + Self.DeltaMana, 0, Self.MaxMana)",
+    "warrior.PoisonTicks": "select(Self.PoisonIntent > 0, Self.PoisonIntent, max(prev(Self.PoisonTicks) - 1, 0))",
+    "mage.PoisonTicks": "select(Self.PoisonIntent > 0, Self.PoisonIntent, max(prev(Self.PoisonTicks) - 1, 0))",
+    "scout.PoisonTicks": "select(Self.PoisonIntent > 0, Self.PoisonIntent, max(prev(Self.PoisonTicks) - 1, 0))",
+    "healer.PoisonTicks": "select(Self.PoisonIntent > 0, Self.PoisonIntent, max(prev(Self.PoisonTicks) - 1, 0))",
+    "warrior.StunTicks": "select(Self.StunIntent > 0, Self.StunIntent, max(prev(Self.StunTicks) - 1, 0))",
+    "mage.StunTicks": "select(Self.StunIntent > 0, Self.StunIntent, max(prev(Self.StunTicks) - 1, 0))",
+    "scout.StunTicks": "select(Self.StunIntent > 0, Self.StunIntent, max(prev(Self.StunTicks) - 1, 0))",
+    "healer.StunTicks": "select(Self.StunIntent > 0, Self.StunIntent, max(prev(Self.StunTicks) - 1, 0))",
+    "warrior.ShieldTicks": "select(Self.ShieldIntent > 0, Self.ShieldIntent, max(prev(Self.ShieldTicks) - 1, 0))",
+    "mage.ShieldTicks": "select(Self.ShieldIntent > 0, Self.ShieldIntent, max(prev(Self.ShieldTicks) - 1, 0))",
+    "scout.ShieldTicks": "select(Self.ShieldIntent > 0, Self.ShieldIntent, max(prev(Self.ShieldTicks) - 1, 0))",
+    "healer.ShieldTicks": "select(Self.ShieldIntent > 0, Self.ShieldIntent, max(prev(Self.ShieldTicks) - 1, 0))",
+    "warrior.PoisonDmg": "select(prev(Self.PoisonTicks) > 0, -3, 0)",
+    "mage.PoisonDmg": "select(prev(Self.PoisonTicks) > 0, -3, 0)",
+    "scout.PoisonDmg": "select(prev(Self.PoisonTicks) > 0, -3, 0)",
+    "healer.PoisonDmg": "select(prev(Self.PoisonTicks) > 0, -3, 0)",
+    "warrior.Alive": "select(Self.HP > 0, prev(Self.Alive), 0)",
+    "mage.Alive": "select(Self.HP > 0, prev(Self.Alive), 0)",
+    "scout.Alive": "select(Self.HP > 0, prev(Self.Alive), 0)",
+    "healer.Alive": "select(Self.HP > 0, prev(Self.Alive), 0)"
   }
 }

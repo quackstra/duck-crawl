@@ -74,6 +74,12 @@ pub fn build_enemies_table(spawns: &[EnemySpawn]) -> Table {
         Column { name: "StunTicks".into(), kind: ColumnKind::Status },
         Column { name: "ShieldTicks".into(), kind: ColumnKind::Status },
         Column { name: "ShieldAmount".into(), kind: ColumnKind::Stat },
+        Column { name: "DeltaHP".into(), kind: ColumnKind::Custom },
+        Column { name: "DeltaMana".into(), kind: ColumnKind::Custom },
+        Column { name: "PoisonIntent".into(), kind: ColumnKind::Custom },
+        Column { name: "StunIntent".into(), kind: ColumnKind::Custom },
+        Column { name: "ShieldIntent".into(), kind: ColumnKind::Custom },
+        Column { name: "PoisonDmg".into(), kind: ColumnKind::Custom },
     ];
 
     let mut table = Table::new(columns);
@@ -86,7 +92,7 @@ pub fn build_enemies_table(spawns: &[EnemySpawn]) -> Table {
         let label = format!("{}_{}", prefix, count);
         let stats = spawn.enemy_type.stats();
 
-        table.add_entity(label, vec![
+        table.add_entity(label.clone(), vec![
             spawn.x as f64,   // PosX
             spawn.y as f64,   // PosY
             stats.hp,         // HP
@@ -102,7 +108,39 @@ pub fn build_enemies_table(spawns: &[EnemySpawn]) -> Table {
             0.0,              // StunTicks
             0.0,              // ShieldTicks
             0.0,              // ShieldAmount
+            0.0,              // DeltaHP
+            0.0,              // DeltaMana
+            0.0,              // PoisonIntent
+            0.0,              // StunIntent
+            0.0,              // ShieldIntent
+            0.0,              // PoisonDmg
         ]);
+
+        // Add combat formulas for this entity
+        table.formulas.insert(
+            format!("{}.HP", label),
+            "clamp(prev(Self.HP) + Self.DeltaHP + Self.PoisonDmg, 0, Self.MaxHP)".into(),
+        );
+        table.formulas.insert(
+            format!("{}.PoisonTicks", label),
+            "select(Self.PoisonIntent > 0, Self.PoisonIntent, max(prev(Self.PoisonTicks) - 1, 0))".into(),
+        );
+        table.formulas.insert(
+            format!("{}.StunTicks", label),
+            "select(Self.StunIntent > 0, Self.StunIntent, max(prev(Self.StunTicks) - 1, 0))".into(),
+        );
+        table.formulas.insert(
+            format!("{}.ShieldTicks", label),
+            "select(Self.ShieldIntent > 0, Self.ShieldIntent, max(prev(Self.ShieldTicks) - 1, 0))".into(),
+        );
+        table.formulas.insert(
+            format!("{}.PoisonDmg", label),
+            "select(prev(Self.PoisonTicks) > 0, -3, 0)".into(),
+        );
+        table.formulas.insert(
+            format!("{}.Alive", label),
+            "select(Self.HP > 0, prev(Self.Alive), 0)".into(),
+        );
     }
 
     table
@@ -126,7 +164,7 @@ mod tests {
         let spawns = great_hall_enemies();
         let table = build_enemies_table(&spawns);
         assert_eq!(table.rows.len(), 3);
-        assert_eq!(table.columns.len(), 15);
+        assert_eq!(table.columns.len(), 21);
     }
 
     #[test]

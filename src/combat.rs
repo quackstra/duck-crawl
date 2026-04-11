@@ -172,7 +172,7 @@ pub fn compute_damage(
     (raw - (target_defense / def_divisor) - shield).max(1.0)
 }
 
-/// Resolve an attack action. Returns the combat event and queues SetCell commands.
+/// Resolve an attack action. Writes DeltaHP intent — formula handles HP calculation and Alive flag.
 pub fn resolve_attack(
     world: &mut World,
     actor_label: &str,
@@ -190,27 +190,23 @@ pub fn resolve_attack(
     let shield_amount = get_stat(world, target_tbl_name, target_label, "ShieldAmount");
     let target_hp = get_stat(world, target_tbl_name, target_label, "HP");
 
-    // TODO: is_defending could be tracked but for now always false
     let damage = compute_damage(atk, damage_mult, def, false, shield_amount, shield_ticks);
-    let new_hp = (target_hp - damage).max(0.0);
-    let killed = new_hp <= 0.0;
 
+    // Predict kill inline — formula will compute same result
+    let poison_dmg = if get_stat(world, target_tbl_name, target_label, "PoisonTicks") > 0.0 { 3.0 } else { 0.0 };
+    let expected_hp = (target_hp - damage - poison_dmg).max(0.0);
+    let killed = expected_hp <= 0.0;
+
+    // Write damage intent — HP formula handles the actual calculation
     world.queue_command(EngineCommand::SetCell {
         table: target_tbl_name.into(),
         label: target_label.into(),
-        column: "HP".into(),
-        value: new_hp,
+        column: "DeltaHP".into(),
+        value: -damage,
     });
 
     if killed {
-        world.queue_command(EngineCommand::SetCell {
-            table: target_tbl_name.into(),
-            label: target_label.into(),
-            column: "Alive".into(),
-            value: 0.0,
-        });
-
-        // Track kills for party members
+        // Track kills for party members (TotalKills has no formula, direct write is fine)
         if actor_table == CombatantTable::Party {
             let kills = get_stat(world, actor_tbl_name, actor_label, "TotalKills");
             world.queue_command(EngineCommand::SetCell {
@@ -222,14 +218,13 @@ pub fn resolve_attack(
         }
     }
 
-    // Set aggro on skeleton-type enemies
+    // Set aggro on skeleton-type enemies (latched — persists across ticks)
     if target_table == CombatantTable::Enemies {
         let etype = get_stat(world, target_tbl_name, target_label, "Type");
         if etype == 2.0 {
-            // Skeleton: set aggro to attacker's entity ID
             if let Some(party) = world.table("Party") {
                 if let Some(row) = party.entity_by_label(actor_label) {
-                    world.queue_command(EngineCommand::SetCell {
+                    world.queue_command(EngineCommand::LatchCell {
                         table: target_tbl_name.into(),
                         label: target_label.into(),
                         column: "AggroTarget".into(),
@@ -243,7 +238,7 @@ pub fn resolve_attack(
     let msg = if killed {
         format!("{} attacks {} for {:.0} damage — killed!", actor_label, target_label, damage)
     } else {
-        format!("{} attacks {} for {:.0} damage (HP: {:.0})", actor_label, target_label, damage, new_hp)
+        format!("{} attacks {} for {:.0} damage (HP: {:.0})", actor_label, target_label, damage, expected_hp)
     };
 
     CombatEvent {
@@ -303,41 +298,39 @@ pub fn resolve_spell(
         }];
     }
 
-    // Deduct mana
+    // Deduct mana via intent
     world.queue_command(EngineCommand::SetCell {
         table: caster_tbl.into(),
         label: caster_label.into(),
-        column: "Mana".into(),
-        value: caster_mana - mana_cost,
+        column: "DeltaMana".into(),
+        value: -mana_cost,
     });
 
     let targets = if is_aoe {
-        // Get all alive enemies
         get_alive_labels(world, table_name(target_table))
     } else {
         vec![target_label.to_string()]
     };
 
     for t_label in &targets {
+        let target_tbl = table_name(target_table);
         match effect_type {
             0 => {
-                // Damage spell
-                let evt = resolve_attack(world, caster_label, caster_table, t_label, target_table, damage_mult);
-                let mut evt = evt;
+                // Damage spell — delegates to resolve_attack which writes DeltaHP
+                let mut evt = resolve_attack(world, caster_label, caster_table, t_label, target_table, damage_mult);
                 evt.action = format!("spell:{}", spell_label);
                 events.push(evt);
             }
             1 => {
-                // Heal
-                let target_tbl = table_name(target_table);
+                // Heal — write positive DeltaHP intent
                 let hp = get_stat(world, target_tbl, t_label, "HP");
                 let max_hp = get_stat(world, target_tbl, t_label, "MaxHP");
-                let new_hp = (hp + heal_amount).min(max_hp);
+                let expected_hp = (hp + heal_amount).min(max_hp);
                 world.queue_command(EngineCommand::SetCell {
                     table: target_tbl.into(),
                     label: t_label.clone(),
-                    column: "HP".into(),
-                    value: new_hp,
+                    column: "DeltaHP".into(),
+                    value: heal_amount,
                 });
                 events.push(CombatEvent {
                     actor: caster_label.into(),
@@ -347,16 +340,15 @@ pub fn resolve_spell(
                     heal: Some(heal_amount),
                     effect: Some("heal".into()),
                     killed: false,
-                    message: format!("{} heals {} for {:.0} HP ({:.0})", caster_label, t_label, heal_amount, new_hp),
+                    message: format!("{} heals {} for {:.0} HP ({:.0})", caster_label, t_label, heal_amount, expected_hp),
                 });
             }
             2 => {
-                // Poison
-                let target_tbl = table_name(target_table);
+                // Poison — write PoisonIntent, formula handles PoisonTicks
                 world.queue_command(EngineCommand::SetCell {
                     table: target_tbl.into(),
                     label: t_label.clone(),
-                    column: "PoisonTicks".into(),
+                    column: "PoisonIntent".into(),
                     value: effect_dur,
                 });
                 events.push(CombatEvent {
@@ -370,12 +362,11 @@ pub fn resolve_spell(
                 });
             }
             3 => {
-                // Stun
-                let target_tbl = table_name(target_table);
+                // Stun — write StunIntent, formula handles StunTicks
                 world.queue_command(EngineCommand::SetCell {
                     table: target_tbl.into(),
                     label: t_label.clone(),
-                    column: "StunTicks".into(),
+                    column: "StunIntent".into(),
                     value: effect_dur,
                 });
                 events.push(CombatEvent {
@@ -389,14 +380,14 @@ pub fn resolve_spell(
                 });
             }
             4 => {
-                // Shield (self-target)
+                // Shield (self-target) — ShieldIntent for ticks, latch ShieldAmount
                 world.queue_command(EngineCommand::SetCell {
                     table: caster_tbl.into(),
                     label: caster_label.into(),
-                    column: "ShieldTicks".into(),
+                    column: "ShieldIntent".into(),
                     value: effect_dur,
                 });
-                world.queue_command(EngineCommand::SetCell {
+                world.queue_command(EngineCommand::LatchCell {
                     table: caster_tbl.into(),
                     label: caster_label.into(),
                     column: "ShieldAmount".into(),
@@ -467,70 +458,41 @@ pub fn select_enemy_action(world: &World, enemy_label: &str) -> (String, String)
     }
 }
 
-/// Apply start-of-turn effects: poison damage, stun check, decrement counters.
-/// Returns events and whether the entity is stunned (skip turn).
-pub fn apply_turn_start_effects(world: &mut World, label: &str, table: CombatantTable) -> (Vec<CombatEvent>, bool) {
+/// Check turn-start status: returns events and whether the entity is stunned.
+/// Poison/stun/shield decrements are handled by formulas now — this just reads state
+/// and generates log events.
+pub fn check_turn_start_status(world: &World, label: &str, table: CombatantTable) -> (Vec<CombatEvent>, bool) {
     let tbl_name = table_name(table);
     let mut events = Vec::new();
 
     let poison = get_stat(world, tbl_name, label, "PoisonTicks");
     let stun = get_stat(world, tbl_name, label, "StunTicks");
 
-    // Poison damage
+    // Report poison (damage is handled by PoisonDmg formula in the tick)
     if poison > 0.0 {
         let hp = get_stat(world, tbl_name, label, "HP");
-        let dmg = 3.0; // flat poison damage per tick
-        let new_hp = (hp - dmg).max(0.0);
-        world.queue_command(EngineCommand::SetCell {
-            table: tbl_name.into(), label: label.into(),
-            column: "HP".into(), value: new_hp,
-        });
-        world.queue_command(EngineCommand::SetCell {
-            table: tbl_name.into(), label: label.into(),
-            column: "PoisonTicks".into(), value: poison - 1.0,
-        });
-        let killed = new_hp <= 0.0;
-        if killed {
-            world.queue_command(EngineCommand::SetCell {
-                table: tbl_name.into(), label: label.into(),
-                column: "Alive".into(), value: 0.0,
-            });
-        }
         events.push(CombatEvent {
             actor: "poison".into(),
             action: "dot".into(),
             target: Some(label.into()),
-            damage: Some(dmg),
+            damage: Some(3.0),
             heal: None,
-            effect: Some(format!("poison:{:.0}", poison - 1.0)),
-            killed,
-            message: format!("{} takes {:.0} poison damage (HP: {:.0})", label, dmg, new_hp),
+            effect: Some(format!("poison:{:.0}", poison)),
+            killed: hp <= 0.0,
+            message: format!("{} takes 3 poison damage (HP: {:.0})", label, hp),
         });
     }
 
-    // Decrement stun
+    // Report stun
     let stunned = stun > 0.0;
     if stunned {
-        world.queue_command(EngineCommand::SetCell {
-            table: tbl_name.into(), label: label.into(),
-            column: "StunTicks".into(), value: stun - 1.0,
-        });
         events.push(CombatEvent {
             actor: label.into(),
             action: "stunned".into(),
             target: None, damage: None, heal: None,
-            effect: Some(format!("stun:{:.0}", stun - 1.0)),
+            effect: Some(format!("stun:{:.0}", stun)),
             killed: false,
             message: format!("{} is stunned!", label),
-        });
-    }
-
-    // Decrement shield
-    let shield = get_stat(world, tbl_name, label, "ShieldTicks");
-    if shield > 0.0 {
-        world.queue_command(EngineCommand::SetCell {
-            table: tbl_name.into(), label: label.into(),
-            column: "ShieldTicks".into(), value: shield - 1.0,
         });
     }
 
