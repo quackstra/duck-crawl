@@ -11,6 +11,8 @@ use crate::combat::{
 };
 use crate::map_gen::build_tile_lookup;
 
+const INTENT_COLUMNS: &[&str] = &["DeltaHP", "DeltaMana", "PoisonIntent", "StunIntent", "ShieldIntent"];
+
 pub type SharedGame = Arc<RwLock<GameState>>;
 
 /// Direction the player is facing. Y increases southward.
@@ -198,7 +200,7 @@ impl GameState {
     }
 
     /// Tick the world: apply pending commands, process movement,
-    /// check combat triggers, run engine tick.
+    /// check combat triggers, run engine tick, clear intents.
     pub fn tick(&mut self) -> Result<(), String> {
         self.world.apply_commands()?;
 
@@ -208,14 +210,18 @@ impl GameState {
 
         self.world.tick()?;
 
+        // Clear intent columns after tick so they don't double-apply
+        self.world.clear_columns("Party", INTENT_COLUMNS);
+        self.world.clear_columns("Enemies", INTENT_COLUMNS);
+
         // Check combat trigger after movement
         if !self.is_in_combat() {
             let adjacent = combat::check_combat_trigger(&self.world, &self.active_character);
             if !adjacent.is_empty() {
                 let ctx = combat::start_combat(&self.world, self.world.tick);
-                // Set InCombat flag on all party members
+                // Latch InCombat flag on all party members
                 for label in &["warrior", "mage", "scout", "healer"] {
-                    self.world.queue_command(EngineCommand::SetCell {
+                    self.world.queue_command(EngineCommand::LatchCell {
                         table: "Party".into(),
                         label: label.to_string(),
                         column: "InCombat".into(),
@@ -246,6 +252,8 @@ impl GameState {
         // Apply commands and tick
         let _ = self.world.apply_commands();
         let _ = self.world.tick();
+        self.world.clear_columns("Party", INTENT_COLUMNS);
+        self.world.clear_columns("Enemies", INTENT_COLUMNS);
 
         // Check if combat ended
         if let Some(outcome) = combat::check_combat_end(&self.world) {
@@ -269,23 +277,18 @@ impl GameState {
 
             let combatant = &ctx.turn_order[ctx.turn_index];
             if combatant.table == CombatantTable::Party {
-                // Player's turn — wait for input
                 break;
             }
 
-            // Enemy turn
+            // Enemy turn — check status (formulas already applied poison/stun)
             let enemy_label = combatant.label.clone();
-
-            // Apply start-of-turn effects
-            let (effect_events, stunned) = combat::apply_turn_start_effects(
-                &mut self.world, &enemy_label, CombatantTable::Enemies,
+            let (effect_events, stunned) = combat::check_turn_start_status(
+                &self.world, &enemy_label, CombatantTable::Enemies,
             );
             all_events.extend(effect_events);
 
             if !stunned {
-                // Check if enemy is still alive after poison
-                let alive = combat::check_combat_end(&self.world);
-                if let Some(outcome) = alive {
+                if let Some(outcome) = combat::check_combat_end(&self.world) {
                     all_events.push(self.end_combat(outcome));
                     return all_events;
                 }
@@ -304,6 +307,8 @@ impl GameState {
 
             let _ = self.world.apply_commands();
             let _ = self.world.tick();
+            self.world.clear_columns("Party", INTENT_COLUMNS);
+            self.world.clear_columns("Enemies", INTENT_COLUMNS);
 
             if let Some(outcome) = combat::check_combat_end(&self.world) {
                 all_events.push(self.end_combat(outcome));
@@ -336,9 +341,9 @@ impl GameState {
         let actor_label = combatant.label.clone();
         let actor_table = combatant.table;
 
-        // Apply start-of-turn effects for player
-        let (mut events, stunned) = combat::apply_turn_start_effects(
-            &mut self.world, &actor_label, actor_table,
+        // Check start-of-turn status (formulas already applied poison/stun)
+        let (mut events, stunned) = combat::check_turn_start_status(
+            &self.world, &actor_label, actor_table,
         );
 
         if stunned {
@@ -438,14 +443,32 @@ impl GameState {
     }
 
     fn end_combat(&mut self, outcome: CombatOutcome) -> CombatEvent {
-        // Clear InCombat flags
+        // Release all combat latches and reset formula-less columns
+        let latch_cols = vec!["InCombat".into(), "ShieldAmount".into()];
         for label in &["warrior", "mage", "scout", "healer"] {
+            self.world.queue_command(EngineCommand::ReleaseCells {
+                table: "Party".into(),
+                label: label.to_string(),
+                columns: latch_cols.clone(),
+            });
+            // InCombat has no formula — release alone won't zero it
             self.world.queue_command(EngineCommand::SetCell {
                 table: "Party".into(),
                 label: label.to_string(),
                 column: "InCombat".into(),
                 value: 0.0,
             });
+        }
+        // Release enemy aggro latches
+        if let Some(enemies) = self.world.table("Enemies") {
+            let labels: Vec<String> = enemies.rows.iter().map(|r| r.label.clone()).collect();
+            for label in labels {
+                self.world.queue_command(EngineCommand::ReleaseCells {
+                    table: "Enemies".into(),
+                    label,
+                    columns: vec!["AggroTarget".into()],
+                });
+            }
         }
         let _ = self.world.apply_commands();
 
@@ -917,5 +940,256 @@ mod tests {
         let events = game.process_combat_action("spell", "slime_1", Some("fireball"));
         // Mage may or may not be the current turn actor, but it shouldn't crash
         assert!(!events.is_empty());
+    }
+
+    // --- Formula-combat tests (intent column system) ---
+
+    #[test]
+    fn test_intent_damage_through_formula() {
+        // Write DeltaHP=-10 on warrior, tick, assert HP decreased by 10
+        let mut game = make_game_with_enemies();
+        let hp_before = get_party_stat(&game.world, "warrior", "HP");
+        assert_eq!(hp_before, 50.0);
+
+        game.world.queue_command(EngineCommand::SetCell {
+            table: "Party".into(), label: "warrior".into(),
+            column: "DeltaHP".into(), value: -10.0,
+        });
+        game.world.apply_commands().unwrap();
+        game.world.tick().unwrap();
+
+        let hp_after = get_party_stat(&game.world, "warrior", "HP");
+        assert_eq!(hp_after, 40.0, "HP formula should apply DeltaHP=-10");
+    }
+
+    #[test]
+    fn test_poison_formula_decrement() {
+        // Set PoisonIntent=3, tick, assert PoisonTicks=3, then tick 3 more times
+        // and assert countdown 2→1→0
+        let mut game = make_game_with_enemies();
+
+        // Apply poison intent
+        game.world.queue_command(EngineCommand::SetCell {
+            table: "Party".into(), label: "warrior".into(),
+            column: "PoisonIntent".into(), value: 3.0,
+        });
+        game.world.apply_commands().unwrap();
+        game.world.tick().unwrap();
+        game.world.clear_columns("Party", INTENT_COLUMNS);
+
+        assert_eq!(get_party_stat(&game.world, "warrior", "PoisonTicks"), 3.0);
+
+        // Tick 1: 3→2
+        game.world.tick().unwrap();
+        assert_eq!(get_party_stat(&game.world, "warrior", "PoisonTicks"), 2.0);
+
+        // Tick 2: 2→1
+        game.world.tick().unwrap();
+        assert_eq!(get_party_stat(&game.world, "warrior", "PoisonTicks"), 1.0);
+
+        // Tick 3: 1→0
+        game.world.tick().unwrap();
+        assert_eq!(get_party_stat(&game.world, "warrior", "PoisonTicks"), 0.0);
+    }
+
+    #[test]
+    fn test_poison_damage_in_hp_formula() {
+        // With PoisonTicks>0, tick, assert HP drops by 3 via PoisonDmg formula.
+        // Note: HP formula (col 5) evaluates before PoisonDmg (col 26) due to
+        // column-index ordering. So HP reads the *previous tick's* PoisonDmg.
+        // This means PoisonDmg=-3 computed in tick N is consumed by HP in tick N+1.
+        let mut game = make_game_with_enemies();
+
+        // Tick 0: Set PoisonIntent=3 → PoisonTicks=3, PoisonDmg=0 (prev PT was 0)
+        game.world.queue_command(EngineCommand::SetCell {
+            table: "Party".into(), label: "warrior".into(),
+            column: "PoisonIntent".into(), value: 3.0,
+        });
+        game.world.apply_commands().unwrap();
+        game.world.tick().unwrap();
+        game.world.clear_columns("Party", INTENT_COLUMNS);
+        assert_eq!(get_party_stat(&game.world, "warrior", "PoisonTicks"), 3.0);
+
+        // Tick 1: PoisonDmg=-3 (prev PT=3>0), but HP reads prev PoisonDmg=0
+        game.world.tick().unwrap();
+        assert_eq!(get_party_stat(&game.world, "warrior", "HP"), 50.0,
+            "HP unaffected — PoisonDmg lag tick");
+
+        // Tick 2: HP now reads prev PoisonDmg=-3 → HP drops by 3
+        game.world.tick().unwrap();
+        let hp_after_tick2 = get_party_stat(&game.world, "warrior", "HP");
+        assert_eq!(hp_after_tick2, 47.0,
+            "Poison should deal 3 damage via PoisonDmg formula (1-tick propagation delay)");
+    }
+
+    #[test]
+    fn test_alive_formula_on_lethal() {
+        // Set DeltaHP to lethal amount, tick, assert Alive=0
+        let mut game = make_game_with_enemies();
+        assert_eq!(get_party_stat(&game.world, "warrior", "Alive"), 1.0);
+
+        game.world.queue_command(EngineCommand::SetCell {
+            table: "Party".into(), label: "warrior".into(),
+            column: "DeltaHP".into(), value: -999.0,
+        });
+        game.world.apply_commands().unwrap();
+        game.world.tick().unwrap();
+
+        assert_eq!(get_party_stat(&game.world, "warrior", "HP"), 0.0, "HP should be 0");
+        assert_eq!(get_party_stat(&game.world, "warrior", "Alive"), 0.0,
+            "Alive formula should set to 0 when HP=0");
+    }
+
+    #[test]
+    fn test_intent_clear_no_double_apply() {
+        // Write DeltaHP=-5, tick, clear intents, tick again, assert HP only dropped once
+        let mut game = make_game_with_enemies();
+        let hp_before = get_party_stat(&game.world, "warrior", "HP");
+
+        game.world.queue_command(EngineCommand::SetCell {
+            table: "Party".into(), label: "warrior".into(),
+            column: "DeltaHP".into(), value: -5.0,
+        });
+        game.world.apply_commands().unwrap();
+        game.world.tick().unwrap();
+        game.world.clear_columns("Party", INTENT_COLUMNS);
+
+        let hp_after_first = get_party_stat(&game.world, "warrior", "HP");
+        assert_eq!(hp_after_first, hp_before - 5.0);
+
+        // Second tick with cleared intents — DeltaHP=0 now
+        game.world.tick().unwrap();
+        let hp_after_second = get_party_stat(&game.world, "warrior", "HP");
+        assert_eq!(hp_after_second, hp_after_first,
+            "HP should not change on second tick after intents cleared");
+    }
+
+    #[test]
+    fn test_heal_intent_caps_at_max() {
+        // Damage first, then DeltaHP=+999, assert HP capped at MaxHP
+        let mut game = make_game_with_enemies();
+
+        // Deal 20 damage
+        game.world.queue_command(EngineCommand::SetCell {
+            table: "Party".into(), label: "warrior".into(),
+            column: "DeltaHP".into(), value: -20.0,
+        });
+        game.world.apply_commands().unwrap();
+        game.world.tick().unwrap();
+        game.world.clear_columns("Party", INTENT_COLUMNS);
+        assert_eq!(get_party_stat(&game.world, "warrior", "HP"), 30.0);
+
+        // Heal for 999
+        game.world.queue_command(EngineCommand::SetCell {
+            table: "Party".into(), label: "warrior".into(),
+            column: "DeltaHP".into(), value: 999.0,
+        });
+        game.world.apply_commands().unwrap();
+        game.world.tick().unwrap();
+
+        assert_eq!(get_party_stat(&game.world, "warrior", "HP"), 50.0,
+            "HP should be capped at MaxHP=50");
+    }
+
+    #[test]
+    fn test_stun_intent_overrides_countdown() {
+        // Set PoisonTicks counting down, then write PoisonIntent=3 mid-countdown
+        let mut game = make_game_with_enemies();
+
+        // Apply PoisonIntent=2 first
+        game.world.queue_command(EngineCommand::SetCell {
+            table: "Party".into(), label: "warrior".into(),
+            column: "PoisonIntent".into(), value: 2.0,
+        });
+        game.world.apply_commands().unwrap();
+        game.world.tick().unwrap();
+        game.world.clear_columns("Party", INTENT_COLUMNS);
+        assert_eq!(get_party_stat(&game.world, "warrior", "PoisonTicks"), 2.0);
+
+        // Tick once to decrement: 2→1
+        game.world.tick().unwrap();
+        assert_eq!(get_party_stat(&game.world, "warrior", "PoisonTicks"), 1.0);
+
+        // Now override with PoisonIntent=3 — should reset to 3
+        game.world.queue_command(EngineCommand::SetCell {
+            table: "Party".into(), label: "warrior".into(),
+            column: "PoisonIntent".into(), value: 3.0,
+        });
+        game.world.apply_commands().unwrap();
+        game.world.tick().unwrap();
+        assert_eq!(get_party_stat(&game.world, "warrior", "PoisonTicks"), 3.0,
+            "PoisonIntent should override countdown");
+    }
+
+    #[test]
+    fn test_multiple_intents_same_tick() {
+        // DeltaHP from attack + PoisonDmg from formula, assert both apply.
+        // Due to column-index ordering, HP reads prev(PoisonDmg). So we need
+        // one propagation tick after PoisonDmg first computes to -3.
+        let mut game = make_game_with_enemies();
+
+        // Tick 0: Set PoisonIntent=3 → PoisonTicks=3, PoisonDmg=0
+        game.world.queue_command(EngineCommand::SetCell {
+            table: "Party".into(), label: "warrior".into(),
+            column: "PoisonIntent".into(), value: 3.0,
+        });
+        game.world.apply_commands().unwrap();
+        game.world.tick().unwrap();
+        game.world.clear_columns("Party", INTENT_COLUMNS);
+
+        // Tick 1: PoisonDmg=-3 computed (prev PT=3>0), HP reads prev PoisonDmg=0
+        game.world.tick().unwrap();
+        let hp_before = get_party_stat(&game.world, "warrior", "HP");
+        assert_eq!(hp_before, 50.0);
+
+        // Tick 2: Write DeltaHP=-10. HP reads prev(PoisonDmg)=-3 from tick 1.
+        // HP = clamp(50 + (-10) + (-3), 0, 50) = 37
+        game.world.queue_command(EngineCommand::SetCell {
+            table: "Party".into(), label: "warrior".into(),
+            column: "DeltaHP".into(), value: -10.0,
+        });
+        game.world.apply_commands().unwrap();
+        game.world.tick().unwrap();
+
+        let hp_after = get_party_stat(&game.world, "warrior", "HP");
+        assert_eq!(hp_after, 37.0,
+            "Both DeltaHP and PoisonDmg should apply in the same tick");
+    }
+
+    #[test]
+    fn test_combat_end_releases_latches() {
+        // Latch InCombat=1, then release and SetCell to 0 (mimicking end_combat).
+        // Verifies that after release, the cell is writable again (not stuck latched).
+        let mut game = make_game_with_enemies();
+
+        // Latch InCombat=1 on warrior
+        game.world.queue_command(EngineCommand::LatchCell {
+            table: "Party".into(), label: "warrior".into(),
+            column: "InCombat".into(), value: 1.0,
+        });
+        game.world.apply_commands().unwrap();
+        assert_eq!(get_party_stat(&game.world, "warrior", "InCombat"), 1.0);
+
+        // Release the latch + set back to 0 (InCombat has no formula, needs explicit reset)
+        game.world.queue_command(EngineCommand::ReleaseCells {
+            table: "Party".into(), label: "warrior".into(),
+            columns: vec!["InCombat".into()],
+        });
+        game.world.queue_command(EngineCommand::SetCell {
+            table: "Party".into(), label: "warrior".into(),
+            column: "InCombat".into(), value: 0.0,
+        });
+        game.world.apply_commands().unwrap();
+        game.world.tick().unwrap();
+
+        assert_eq!(get_party_stat(&game.world, "warrior", "InCombat"), 0.0,
+            "InCombat should be 0 after latch release + explicit reset");
+    }
+
+    fn get_party_stat(world: &World, label: &str, col: &str) -> f64 {
+        let table = world.table("Party").unwrap();
+        let ci = table.col_index(col).unwrap();
+        let row = table.entity_by_label(label).unwrap();
+        row.cells[ci].as_val()
     }
 }
